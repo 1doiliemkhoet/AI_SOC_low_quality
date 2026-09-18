@@ -10,9 +10,10 @@ Includes:
 - ML enrichment
 - Context enrichment
 - Structured JSON output parsing
-- Model fallback logic
+- Single-slot Ollama request serialization
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -120,8 +121,14 @@ class OllamaClient:
 
         self.base_url = settings.ollama_host
         self.primary_model = settings.primary_model
-        self.fallback_model = settings.fallback_model
         self.timeout = settings.llm_timeout
+
+        # Ollama is a single-slot CPU-bound resource on the current host.
+        # Serialize generation requests so alert-triage cannot overwhelm Ollama.
+        self._ollama_semaphore = asyncio.Semaphore(1)
+
+        # Keep LLM responses bounded to reduce CPU time and queue latency.
+        self.max_output_tokens = min(settings.max_tokens, 1024)
 
         # ML inference client
         self.ml_client = MLInferenceClient(
@@ -1156,64 +1163,68 @@ Begin analysis now.
         temperature: float = 0.1,
     ) -> Optional[str]:
 
-        try:
+        # Ollama is configured for a single concurrent slot on the host.
+        # All /api/generate calls from this service therefore wait on one
+        # semaphore instead of competing for CPU at the same time.
+        async with self._ollama_semaphore:
+            try:
 
-            async with httpx.AsyncClient(
-                timeout=self.timeout
-            ) as client:
+                async with httpx.AsyncClient(
+                    timeout=self.timeout
+                ) as client:
 
-                payload = {
-                    "model": model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": temperature,
-                        "num_predict": settings.max_tokens,
-                    },
-                    "format": "json",
-                }
+                    payload = {
+                        "model": model,
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {
+                            "temperature": temperature,
+                            "num_predict": self.max_output_tokens,
+                        },
+                        "format": "json",
+                    }
 
-                logger.info(
-                    f"Calling Ollama model: {model}"
-                )
-
-                response = await client.post(
-                    f"{self.base_url}/api/generate",
-                    json=payload,
-                )
-
-                if response.status_code == 200:
-
-                    result = response.json()
-
-                    return result.get("response")
-
-                else:
-
-                    logger.error(
-                        "Ollama API error: "
-                        f"{response.status_code} - "
-                        f"{response.text}"
+                    logger.info(
+                        f"Calling Ollama model: {model}"
                     )
 
-                    return None
+                    response = await client.post(
+                        f"{self.base_url}/api/generate",
+                        json=payload,
+                    )
 
-        except httpx.TimeoutException:
+                    if response.status_code == 200:
 
-            logger.error(
-                f"Ollama request timeout "
-                f"after {self.timeout}s"
-            )
+                        result = response.json()
 
-            return None
+                        return result.get("response")
 
-        except Exception as e:
+                    else:
 
-            logger.error(
-                f"Ollama API call failed: {e}"
-            )
+                        logger.error(
+                            "Ollama API error: "
+                            f"{response.status_code} - "
+                            f"{response.text}"
+                        )
 
-            return None
+                        return None
+
+            except httpx.TimeoutException:
+
+                logger.error(
+                    f"Ollama request timeout "
+                    f"after {self.timeout}s"
+                )
+
+                return None
+
+            except Exception as e:
+
+                logger.error(
+                    f"Ollama API call failed: {e}"
+                )
+
+                return None
 
     # -----------------------------------------------------
     # PARSE LLM RESPONSE
@@ -1477,47 +1488,17 @@ Begin analysis now.
                 return response
 
         # -------------------------------------------------
-        # STEP 6: FALLBACK MODEL
+        # STEP 6: NO FALLBACK
         # -------------------------------------------------
 
-        logger.warning(
-            "Primary model failed, "
-            f"trying fallback: "
-            f"{self.fallback_model}"
+        # The current host has one Ollama slot. Retrying the same local
+        # model only doubles CPU work and increases queue latency, so a
+        # failed primary generation is surfaced as a failed triage result.
+        logger.error(
+            f"Failed to analyze alert "
+            f"{alert.alert_id} "
+            "with the configured Ollama model"
         )
-
-        llm_output = await self._call_ollama(
-            enriched_prompt,
-            self.fallback_model,
-            settings.llm_temperature,
-        )
-
-        if llm_output:
-
-            response = self._parse_llm_response(
-                alert,
-                llm_output,
-                self.fallback_model,
-            )
-
-            if response:
-
-                if ml_prediction:
-
-                    response.ml_prediction = (
-                        ml_prediction.prediction
-                    )
-
-                    response.ml_confidence = (
-                        ml_prediction.confidence
-                    )
-
-                logger.info(
-                    f"Alert {alert.alert_id} "
-                    f"analyzed with fallback model"
-                )
-
-                return response
 
         # -------------------------------------------------
         # BOTH MODELS FAILED
