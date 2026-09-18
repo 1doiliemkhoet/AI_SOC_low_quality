@@ -1,0 +1,26 @@
+#!/bin/bash
+
+ALERT_FILE="$1"
+API_KEY="$2"
+HOOK_URL="$3"
+
+if [ -z "$ALERT_FILE" ] || [ -z "$HOOK_URL" ]; then
+    echo "ERROR: missing ALERT_FILE or HOOK_URL" >&2
+    exit 1
+fi
+
+if [ ! -f "$ALERT_FILE" ]; then
+    echo "ERROR: alert file not found: $ALERT_FILE" >&2
+    exit 1
+fi
+
+curl -X POST "$HOOK_URL" \
+    -H "Content-Type: application/json" \
+    -H "X-Wazuh-Alert: true" \
+    --connect-timeout 5 \
+    --max-time 300 \
+    --retry 2 \
+    --retry-delay 2 \
+    -d @"$ALERT_FILE" \
+    --silent \
+    --show-error

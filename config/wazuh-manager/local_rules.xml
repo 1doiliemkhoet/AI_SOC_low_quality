@@ -1,0 +1,8 @@
+<group name="local,test,">
+
+  <rule id="100001" level="10">
+    <match>WAZUH_TEST_ALERT</match>
+    <description>Wazuh test alert - WAZUH_TEST_ALERT detected</description>
+  </rule>
+
+</group>

@@ -1,0 +1,36 @@
+<group name="local,syslog,sudo,">
+  <rule id="100010" level="5">
+    <if_sid>5402</if_sid>
+    <description>TEST: Sudo command executed on $(hostname)</description>
+    <group>local_test,</group>
+  </rule>
+</group>
+
+<group name="local,syslog,">
+  <rule id="100011" level="7">
+    
+    <match>WAZUH_TEST_ALERT</match>
+    <description>TEST: Manual test alert triggered on $(hostname)</description>
+    <group>local_test,</group>
+  </rule>
+</group>
+
+<group name="windows,local,">
+  <rule id="100012" level="5">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^4624$</field>
+    <description>TEST: Windows logon detected on $(hostname)</description>
+    <group>local_test,</group>
+  </rule>
+</group>
+
+<group name="Zeek, ">
+  <rule id="100500" level="10">
+    <decoded_as>json</decoded_as>
+    <field name="note">CustomSSHBruteforce::SSh_Brute_Force</field>
+    <description>Possible Brute Force from$(src) to $(dst): $(msg)</description>
+    <mitre>
+      <id>T1110</id>
+    </mitre>
+  </rule>
+</group>

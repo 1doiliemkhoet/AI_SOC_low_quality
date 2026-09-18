@@ -1,0 +1,7 @@
+﻿{
+  "login": "admin2",
+  "name": "Cortex Administrator",
+  "roles": ["superAdmin"],
+  "organization": "cortex",
+  "password": "CortexAdmin@2026!"
+}
