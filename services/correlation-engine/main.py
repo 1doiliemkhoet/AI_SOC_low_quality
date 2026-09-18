@@ -609,6 +609,24 @@ async def run_simulation(
         raise HTTPException(status_code=500, detail=f"Simulation failed: {e}")
 
 
+
+@app.get("/simulate/{simulation_id}")
+async def get_simulation(simulation_id: str):
+    """
+    Return a previously completed simulation report from the in-memory store.
+    This endpoint is read-only and never starts a new simulation.
+    """
+    store = getattr(app.state, "simulation_store", None)
+    if not store or simulation_id not in store:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Simulation '{simulation_id}' not found. "
+                   "The report may have expired after service restart or LRU eviction.",
+        )
+
+    entry = store[simulation_id]
+    return entry.get("report", entry)
+
 # ---------------------------------------------------------------------------
 # Chat with Attacker Agent
 # ---------------------------------------------------------------------------
