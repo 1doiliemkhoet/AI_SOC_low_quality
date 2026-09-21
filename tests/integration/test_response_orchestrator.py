@@ -28,6 +28,54 @@ sys.path.insert(
 )
 
 
+
+# Response-orchestrator uses bare module imports while other services expose
+# modules with the same names. Isolate those modules per test so the suite does
+# not depend on collection or execution order.
+_RESPONSE_MODULES = {
+    "models",
+    "config",
+    "database",
+    "metrics",
+    "d3fend",
+    "safety",
+    "planner",
+    "orchestrator",
+    "verification",
+    "adapters",
+}
+
+
+@pytest.fixture(autouse=True)
+def isolate_response_orchestrator_modules():
+    response_prefixes = tuple(f"{name}." for name in _RESPONSE_MODULES)
+    previous_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if name in _RESPONSE_MODULES or name.startswith(response_prefixes)
+    }
+    original_sys_path = list(sys.path)
+
+    for name in list(sys.modules):
+        if name in _RESPONSE_MODULES or name.startswith(response_prefixes):
+            sys.modules.pop(name, None)
+
+    response_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "..", "services", "response-orchestrator",
+    )
+    sys.path.insert(0, response_path)
+
+    try:
+        yield
+    finally:
+        for name in list(sys.modules):
+            if name in _RESPONSE_MODULES or name.startswith(response_prefixes):
+                sys.modules.pop(name, None)
+        sys.modules.update(previous_modules)
+        sys.path[:] = original_sys_path
+
+
 # ============================================================================
 # D3FEND Integration Tests
 # ============================================================================
