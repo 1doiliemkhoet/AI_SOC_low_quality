@@ -36,7 +36,6 @@ _RESPONSE_MODULES = {
     "models",
     "config",
     "database",
-    "metrics",
     "d3fend",
     "safety",
     "planner",
