@@ -253,11 +253,11 @@ class TestDataFlow:
 
             # Step 2: Validate triage result structure
             assert triage_result["severity"] in ["critical", "high", "medium", "low", "informational"]
-                assert 0.0 <= triage_result["confidence"] <= 1.0
+            assert 0.0 <= triage_result["confidence"] <= 1.0
 
-                # Step 3: Create TheHive case (when integrated)
-                # This would send to TheHive API
-                # TODO: Implement when TheHive is deployed
+            # Step 3: Create TheHive case (when integrated)
+            # This would send to TheHive API
+            # TODO: Implement when TheHive is deployed
 
         except (httpx.RequestError, asyncio.TimeoutError) as e:
             pytest.skip(f"Services unavailable: {e}")
