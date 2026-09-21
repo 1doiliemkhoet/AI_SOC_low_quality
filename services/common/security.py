@@ -38,7 +38,7 @@ def validate_input(
     """
     # Length check
     if len(text) > max_length:
-        return False, f"Input exceeds maximum length of {max_length} characters"
+        return False, f"Input too long: maximum length is {max_length} characters"
 
     # Empty input
     if not text.strip():
