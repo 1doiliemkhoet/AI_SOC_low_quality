@@ -651,6 +651,204 @@ class ResponseOrchestrator:
 
     # ----- Approval Handling -----
 
+    async def _claim_approval_action(
+        self,
+        plan_id: str,
+        action_id: str,
+        approved: bool,
+        analyst_id: Optional[str],
+        notes: Optional[str],
+    ) -> datetime:
+        """Atomically claim a pending action for one approval request."""
+        try:
+            async with db_session() as session:
+                plan_result = await session.execute(
+                    select(DefensePlanModel)
+                    .where(DefensePlanModel.plan_id == plan_id)
+                    .with_for_update()
+                )
+                db_plan = plan_result.scalar_one_or_none()
+                if db_plan is None:
+                    raise ValueError(f"Plan {plan_id} not found")
+
+                action_result = await session.execute(
+                    select(PlannedActionModel)
+                    .where(
+                        PlannedActionModel.plan_id == plan_id,
+                        PlannedActionModel.action_id == action_id,
+                    )
+                    .with_for_update()
+                )
+                db_action = action_result.scalar_one_or_none()
+                if db_action is None:
+                    raise ValueError(
+                        f"Action {action_id} not found in plan {plan_id}"
+                    )
+
+                if db_action.status != ActionStatus.PENDING.value:
+                    raise ValueError(
+                        f"Action {action_id} is {db_action.status}, not pending"
+                    )
+
+                db_action.approved_by = analyst_id
+                db_action.approval_notes = notes
+                db_action.status = (
+                    ActionStatus.EXECUTING.value
+                    if approved
+                    else ActionStatus.VETOED.value
+                )
+
+                return db_plan.updated_at or db_plan.created_at
+        except RuntimeError as exc:
+            if str(exc) != "Database pool has not been initialised":
+                raise
+
+            # In-process test fallback. Production uses the transactional
+            # database claim above for worker-safe approval handling.
+            plan = self._plans.get(plan_id)
+            if not plan:
+                raise ValueError(f"Plan {plan_id} not found")
+
+            action = next(
+                (a for a in plan.actions if a.action_id == action_id),
+                None,
+            )
+            if not action:
+                raise ValueError(
+                    f"Action {action_id} not found in plan {plan_id}"
+                )
+            if action.status != ActionStatus.PENDING:
+                raise ValueError(
+                    f"Action {action_id} is {action.status.value}, not pending"
+                )
+
+            action.approved_by = analyst_id
+            action.approval_notes = notes
+            action.status = (
+                ActionStatus.EXECUTING
+                if approved
+                else ActionStatus.VETOED
+            )
+            return plan.updated_at or plan.created_at
+
+    async def _persist_action(self, action: PlannedAction) -> None:
+        """Persist only one action to avoid overwriting concurrent updates."""
+        try:
+            async with db_session() as session:
+                result = await session.execute(
+                    select(PlannedActionModel).where(
+                        PlannedActionModel.action_id == action.action_id
+                    )
+                )
+                db_action = result.scalar_one_or_none()
+                if db_action is None:
+                    raise ValueError(f"Action {action.action_id} not found")
+
+                db_action.status = action.status.value
+                db_action.executed_at = action.executed_at
+                db_action.completed_at = action.completed_at
+                db_action.rolled_back_at = action.rolled_back_at
+                db_action.adapter_response = action.adapter_response
+                db_action.error_message = action.error_message
+                db_action.approved_by = action.approved_by
+                db_action.approval_notes = action.approval_notes
+        except RuntimeError as exc:
+            if str(exc) != "Database pool has not been initialised":
+                raise
+
+    async def _finalize_approval_state(
+        self,
+        plan_id: str,
+        human_approved: bool,
+    ) -> bool:
+        """Update counters and transition to verification atomically."""
+        terminal_statuses = {
+            ActionStatus.COMPLETED.value,
+            ActionStatus.FAILED.value,
+            ActionStatus.SKIPPED.value,
+            ActionStatus.VETOED.value,
+            ActionStatus.ROLLED_BACK.value,
+        }
+
+        try:
+            async with db_session() as session:
+                plan_result = await session.execute(
+                    select(DefensePlanModel)
+                    .where(DefensePlanModel.plan_id == plan_id)
+                    .with_for_update()
+                )
+                db_plan = plan_result.scalar_one_or_none()
+                if db_plan is None:
+                    return False
+
+                if human_approved:
+                    db_plan.human_approved_count = (
+                        db_plan.human_approved_count or 0
+                    ) + 1
+
+                actions_result = await session.execute(
+                    select(PlannedActionModel).where(
+                        PlannedActionModel.plan_id == plan_id
+                    )
+                )
+                db_actions = actions_result.scalars().all()
+                all_resolved = bool(db_actions) and all(
+                    row.status in terminal_statuses for row in db_actions
+                )
+
+                should_verify = (
+                    all_resolved
+                    and db_plan.status
+                    not in {
+                        PlanStatus.VERIFYING.value,
+                        PlanStatus.COMPLETED.value,
+                        PlanStatus.FAILED.value,
+                        PlanStatus.ROLLED_BACK.value,
+                    }
+                )
+                if should_verify:
+                    db_plan.status = PlanStatus.VERIFYING.value
+
+                db_plan.updated_at = datetime.utcnow()
+                return should_verify
+        except RuntimeError as exc:
+            if str(exc) != "Database pool has not been initialised":
+                raise
+
+            # In-process test fallback.
+            plan = self._plans.get(plan_id)
+            if not plan:
+                return False
+
+            if human_approved:
+                plan.human_approved_count += 1
+
+            all_resolved = bool(plan.actions) and all(
+                action.status
+                in (
+                    ActionStatus.COMPLETED,
+                    ActionStatus.FAILED,
+                    ActionStatus.SKIPPED,
+                    ActionStatus.VETOED,
+                    ActionStatus.ROLLED_BACK,
+                )
+                for action in plan.actions
+            )
+            should_verify = (
+                all_resolved
+                and plan.status
+                not in (
+                    PlanStatus.VERIFYING,
+                    PlanStatus.COMPLETED,
+                    PlanStatus.FAILED,
+                    PlanStatus.ROLLED_BACK,
+                )
+            )
+            if should_verify:
+                plan.status = PlanStatus.VERIFYING
+            plan.updated_at = datetime.utcnow()
+            return should_verify
+
     async def approve_action(
         self,
         plan_id: str,
@@ -659,25 +857,14 @@ class ResponseOrchestrator:
         analyst_id: Optional[str] = None,
         notes: Optional[str] = None,
     ) -> PlannedAction:
-        """Approve or reject a pending action."""
-        plan = await self._load_plan_from_db(plan_id)
-        if not plan:
-            raise ValueError(f"Plan {plan_id} not found")
-
-        action = next(
-            (a for a in plan.actions if a.action_id == action_id), None
+        """Approve or reject a pending action using an atomic DB claim."""
+        approval_started_at = await self._claim_approval_action(
+            plan_id=plan_id,
+            action_id=action_id,
+            approved=approved,
+            analyst_id=analyst_id,
+            notes=notes,
         )
-        if not action:
-            raise ValueError(f"Action {action_id} not found in plan {plan_id}")
-
-        if action.status != ActionStatus.PENDING:
-            raise ValueError(
-                f"Action {action_id} is {action.status.value}, not pending"
-            )
-
-        action.approved_by = analyst_id
-        action.approval_notes = notes
-        approval_started_at = plan.updated_at or plan.created_at
 
         APPROVAL_LATENCY.observe(
             max(
@@ -686,32 +873,60 @@ class ResponseOrchestrator:
             )
         )
 
+        plan = await self._load_plan_from_db(plan_id)
+        if not plan:
+            raise ValueError(
+                f"Plan {plan_id} not found after approval claim"
+            )
+
+        action = next(
+            (a for a in plan.actions if a.action_id == action_id), None
+        )
+        if not action:
+            raise ValueError(f"Action {action_id} not found in plan {plan_id}")
+
+        execution_error: Optional[Exception] = None
+
         if approved:
-            plan.human_approved_count += 1
-            result = await self._execute_action(plan, action)
-            if not result.success:
-                logger.error(
-                    f"Approved action {action_id} failed: {result.error}"
+            try:
+                result = await self._execute_action(plan, action)
+                if not result.success:
+                    logger.error(
+                        f"Approved action {action_id} failed: {result.error}"
+                    )
+            except Exception as exc:
+                execution_error = exc
+                action.status = ActionStatus.FAILED
+                action.error_message = str(exc)
+                logger.exception(
+                    f"Approved action {action_id} raised during execution"
                 )
+            finally:
+                await self._persist_action(action)
         else:
             action.status = ActionStatus.VETOED
             logger.info(f"Action {action_id} vetoed by {analyst_id}")
 
-        # Check if all actions are now resolved
-        all_resolved = all(
-            a.status in (
-                ActionStatus.COMPLETED, ActionStatus.FAILED,
-                ActionStatus.SKIPPED, ActionStatus.VETOED,
-            )
-            for a in plan.actions
+        should_verify = await self._finalize_approval_state(
+            plan_id=plan_id,
+            human_approved=approved,
         )
 
-        if all_resolved:
-            plan.status = PlanStatus.VERIFYING
-            asyncio.create_task(self._verify_and_complete(plan))
+        final_plan = await self._load_plan_from_db(plan_id)
+        if should_verify and final_plan:
+            asyncio.create_task(self._verify_and_complete(final_plan))
 
-        plan.updated_at = datetime.utcnow()
-        await self._persist_plan(plan)
+        if final_plan:
+            final_action = next(
+                (a for a in final_plan.actions if a.action_id == action_id),
+                None,
+            )
+            if final_action:
+                action = final_action
+
+        if execution_error:
+            raise execution_error
+
         return action
 
     # ----- Verification & Completion -----
