@@ -11,13 +11,15 @@ intelligence into action.
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.responses import JSONResponse
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import CollectorRegistry, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client.multiprocess import MultiProcessCollector
 from starlette.responses import Response
 
 from config import get_settings
@@ -405,8 +407,15 @@ async def d3fend_supported_techniques():
 @app.get("/metrics", tags=["Monitoring"])
 async def prometheus_metrics():
     """Prometheus metrics endpoint."""
+    if os.getenv("PROMETHEUS_MULTIPROC_DIR"):
+        registry = CollectorRegistry()
+        MultiProcessCollector(registry)
+        content = generate_latest(registry)
+    else:
+        content = generate_latest()
+
     return Response(
-        content=generate_latest(),
+        content=content,
         media_type=CONTENT_TYPE_LATEST,
     )
 
