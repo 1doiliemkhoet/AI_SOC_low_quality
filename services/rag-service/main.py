@@ -79,6 +79,10 @@ class RetrievalRequest(BaseModel):
     collection: str = Field("mitre_attack", description="Knowledge base collection")
     top_k: int = Field(3, ge=1, le=10, description="Number of results to return")
     min_similarity: float = Field(0.7, ge=0.0, le=1.0, description="Minimum similarity threshold")
+    mitre_techniques: Optional[List[str]] = Field(
+        None,
+        description="Optional exact MITRE ATT&CK technique IDs to prioritize"
+    )
 
 
 class RetrievalResult(BaseModel):
@@ -132,13 +136,47 @@ async def retrieve_context(request: RetrievalRequest):
     try:
         logger.info(f"Retrieval request: query='{request.query}', collection={request.collection}")
 
-        # Query vector store
-        results = await vector_store.query(
+        # When Wazuh already identified MITRE technique IDs, retrieve those
+        # exact metadata matches first. Semantic retrieval is then used to
+        # provide additional related context without displacing the exact match.
+        results = []
+        seen_keys = set()
+
+        if request.collection == "mitre_attack" and request.mitre_techniques:
+            for technique_id in request.mitre_techniques:
+                exact_matches = await vector_store.query(
+                    collection_name=request.collection,
+                    query_text=technique_id,
+                    top_k=1,
+                    min_similarity=0.0,
+                    metadata_filter={"technique_id": technique_id}
+                )
+                for result in exact_matches:
+                    result_key = (
+                        (result.get("metadata") or {}).get("technique_id")
+                        or result.get("document")
+                    )
+                    if result_key not in seen_keys:
+                        results.append(result)
+                        seen_keys.add(result_key)
+
+        semantic_results = await vector_store.query(
             collection_name=request.collection,
             query_text=request.query,
             top_k=request.top_k,
             min_similarity=request.min_similarity
         )
+
+        for result in semantic_results:
+            result_key = (
+                (result.get("metadata") or {}).get("technique_id")
+                or result.get("document")
+            )
+            if result_key not in seen_keys:
+                results.append(result)
+                seen_keys.add(result_key)
+
+        results = results[:request.top_k]
 
         # Convert to response model
         retrieval_results = [
