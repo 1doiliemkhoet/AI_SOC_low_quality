@@ -112,7 +112,7 @@ def sanitize_log(log_text: str, preserve_context: bool = True) -> str:
     # Redact passwords
     text = re.sub(
         r'(password|passwd|pwd)\s*[:=]\s*\S+',
-        r'\1=***REDACTED***',
+        r'\1=[REDACTED]',
         text,
         flags=re.IGNORECASE
     )
@@ -128,7 +128,7 @@ def sanitize_log(log_text: str, preserve_context: bool = True) -> str:
     # Redact authentication tokens
     text = re.sub(
         r'(Bearer|Authorization:\s*Bearer)\s+[\w\-\.]+',
-        r'\1 ***REDACTED***',
+        r'\1 [REDACTED]',
         text,
         flags=re.IGNORECASE
     )
