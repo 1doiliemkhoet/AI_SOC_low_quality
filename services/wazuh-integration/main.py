@@ -237,19 +237,56 @@ async def receive_wazuh_alert(alert: WazuhAlert):
             processing_timestamp=datetime.utcnow()
         )
 
-        # Add RAG enrichment if available
-        if rag_result and rag_result.get("results"):
-            results = rag_result.get("results", [])
-            # Extract MITRE context from top results
-            context_parts = []
-            kb_refs = []
-            for r in results[:3]:  # Top 3 results
-                if r.get("document"):
-                    context_parts.append(r["document"][:500])  # Truncate long docs
-                if r.get("metadata", {}).get("technique_id"):
-                    kb_refs.append(r["metadata"]["technique_id"])
-            enriched_alert.mitre_context = "\n---\n".join(context_parts) if context_parts else None
-            enriched_alert.kb_references = kb_refs if kb_refs else None
+        # Add RAG enrichment from all supported knowledge bases.
+        if rag_result:
+            mitre_results = (rag_result.get("mitre_attack") or {}).get("results", [])
+            cve_results = (rag_result.get("cve_database") or {}).get("results", [])
+            runbook_results = (rag_result.get("security_runbooks") or {}).get("results", [])
+
+            enriched_alert.mitre_context = (
+                "\n---\n".join(
+                    r["document"][:500]
+                    for r in mitre_results[:3]
+                    if r.get("document")
+                )
+                or None
+            )
+
+            enriched_alert.cve_context = (
+                "\n---\n".join(
+                    r["document"][:500]
+                    for r in cve_results[:3]
+                    if r.get("document")
+                )
+                or None
+            )
+
+            enriched_alert.runbook_context = (
+                "\n---\n".join(
+                    r["document"][:500]
+                    for r in runbook_results[:3]
+                    if r.get("document")
+                )
+                or None
+            )
+
+            enriched_alert.cve_references = list(dict.fromkeys(
+                r.get("metadata", {}).get("cve_id")
+                for r in cve_results
+                if r.get("metadata", {}).get("cve_id")
+            )) or None
+
+            enriched_alert.runbook_references = list(dict.fromkeys(
+                r.get("metadata", {}).get("runbook_id")
+                for r in runbook_results
+                if r.get("metadata", {}).get("runbook_id")
+            )) or None
+
+            enriched_alert.kb_references = list(dict.fromkeys(
+                r.get("metadata", {}).get("technique_id")
+                for r in mitre_results
+                if r.get("metadata", {}).get("technique_id")
+            )) or None
 
         # Step 4: Correlate into incident
         try:
