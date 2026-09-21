@@ -11,7 +11,6 @@ import os
 import sys
 import pytest
 import pytest_asyncio
-import asyncio
 from pathlib import Path
 from typing import AsyncGenerator, Generator
 
@@ -40,14 +39,6 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "slow: Tests that take >5 seconds")
     config.addinivalue_line("markers", "requires_ollama: Tests requiring Ollama")
     config.addinivalue_line("markers", "requires_docker: Tests requiring Docker")
-
-
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create event loop for async tests"""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
 
 
 # ============================================================================
