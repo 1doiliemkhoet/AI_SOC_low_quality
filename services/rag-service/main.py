@@ -162,8 +162,14 @@ async def retrieve_context(request: RetrievalRequest):
         results = []
         seen_keys = set()
 
-        if request.collection == "mitre_attack" and request.mitre_techniques:
-            for technique_id in request.mitre_techniques:
+        if request.collection == "mitre_attack":
+            mitre_ids = list(request.mitre_techniques or [])
+            mitre_ids.extend(
+                re.findall(r"\bT\d{4}(?:\.\d{3})?\b", request.query, re.IGNORECASE)
+            )
+            mitre_ids = list(dict.fromkeys(mitre_id.upper() for mitre_id in mitre_ids))
+
+            for technique_id in mitre_ids:
                 exact_matches = await vector_store.query(
                     collection_name=request.collection,
                     query_text=technique_id,
