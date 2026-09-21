@@ -8,6 +8,7 @@ Date: 2025-10-22
 """
 
 import json
+import time
 import pytest
 import sys
 from pathlib import Path
@@ -349,14 +350,14 @@ class TestErrorHandling:
 class TestPerformance:
     """Test performance characteristics"""
 
-    def test_model_validation_performance(self, sample_security_alert, benchmark):
-        """Benchmark Pydantic model validation speed"""
-        def create_alert():
-            return SecurityAlert(**sample_security_alert)
+    def test_model_validation_performance(self, sample_security_alert):
+        """Check Pydantic model validation remains lightweight."""
+        start = time.perf_counter()
+        result = SecurityAlert(**sample_security_alert)
+        elapsed_ms = (time.perf_counter() - start) * 1000
 
-        # Should be fast (<1ms)
-        result = benchmark(create_alert)
         assert result is not None
+        assert elapsed_ms < 10.0
 
 
 if __name__ == "__main__":
