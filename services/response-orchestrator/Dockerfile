@@ -28,6 +28,9 @@ COPY . .
 RUN useradd -m -u 1000 orchuser && chown -R orchuser:orchuser /app
 USER orchuser
 
+# Prometheus multiprocess metrics are shared by the Uvicorn workers.
+ENV PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus
+
 # Expose FastAPI port
 EXPOSE 8000
 
@@ -36,4 +39,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Run FastAPI with uvicorn
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+CMD ["sh", "-c", "rm -rf \"$PROMETHEUS_MULTIPROC_DIR\" && mkdir -p \"$PROMETHEUS_MULTIPROC_DIR\" && exec uvicorn main:app --host 0.0.0.0 --port 8000 --workers 2"]
