@@ -72,6 +72,19 @@ def validate_input(
             logger.warning(f"Potential command injection detected: {pattern}")
             return False, "Invalid input pattern detected"
 
+
+    # Detect path traversal. Normalize Windows separators first so the same
+    # checks cover both Unix and Windows-style traversal attempts.
+    normalized_path = text.replace("\\", "/")
+    path_traversal_patterns = [
+        r'(?:^|/)\.\.(?:/|$)',
+        r'(?:^|/)\.{2,}(?:/|$)',
+    ]
+    for pattern in path_traversal_patterns:
+        if re.search(pattern, normalized_path):
+            logger.warning("Potential path traversal detected")
+            return False, "Invalid input pattern detected"
+
     return True, None
 
 
@@ -167,6 +180,10 @@ def detect_prompt_injection(text: str) -> tuple[bool, Optional[str]]:
         (r'new\s+instructions?:', 'instruction_injection'),
         (r'system\s*:', 'instruction_injection'),
         (r'\\n\\nHuman:', 'instruction_injection'),
+
+        (r'ignore\\s+(?:your|the)\\s+(?:training|safety|guidelines)', 'system_override'),
+        (r'ignore\\s+the\\s+[^\\n]{0,80}\\s+and\\s+(?:instead|rather)', 'instruction_injection'),
+        (r'act\\s+as\\s+(?:an?|the)\\s+(?:attacker|unrestricted|unfiltered)', 'role_switch'),
 
         # Output manipulation
         (r'output\s+your\s+(prompt|instructions)', 'output_manipulation'),
