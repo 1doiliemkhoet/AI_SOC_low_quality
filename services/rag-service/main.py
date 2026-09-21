@@ -190,12 +190,10 @@ async def retrieve_context(request: RetrievalRequest):
             mitre_ids = list(dict.fromkeys(mitre_id.upper() for mitre_id in mitre_ids))
 
             for technique_id in mitre_ids:
-                exact_matches = await vector_store.query(
+                exact_matches = await vector_store.get_by_metadata(
                     collection_name=request.collection,
-                    query_text=technique_id,
+                    metadata_filter={"technique_id": technique_id},
                     top_k=1,
-                    min_similarity=0.0,
-                    metadata_filter={"technique_id": technique_id}
                 )
                 for result in exact_matches:
                     result_key = (
@@ -216,12 +214,10 @@ async def retrieve_context(request: RetrievalRequest):
 
             for cve_id in cve_ids:
                 cve_id = cve_id.upper()
-                exact_matches = await vector_store.query(
+                exact_matches = await vector_store.get_by_metadata(
                     collection_name=request.collection,
-                    query_text=cve_id,
+                    metadata_filter={"cve_id": cve_id},
                     top_k=1,
-                    min_similarity=0.0,
-                    metadata_filter={"cve_id": cve_id}
                 )
                 for result in exact_matches:
                     result_key = (
