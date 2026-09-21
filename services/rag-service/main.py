@@ -139,6 +139,21 @@ async def retrieve_context(request: RetrievalRequest):
         RetrievalResponse: Relevant documents with similarity scores
     """
     try:
+        supported_collections = {
+            "mitre_attack",
+            "cve_database",
+            "incident_history",
+            "security_runbooks",
+        }
+        if request.collection not in supported_collections:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Unsupported collection: {request.collection}. "
+                    f"Supported: {', '.join(sorted(supported_collections))}"
+                ),
+            )
+
         logger.info(f"Retrieval request: query='{request.query}', collection={request.collection}")
 
         # When Wazuh already identified MITRE technique IDs, retrieve those
@@ -199,8 +214,10 @@ async def retrieve_context(request: RetrievalRequest):
         )
 
         for result in semantic_results:
+            metadata = result.get("metadata") or {}
             result_key = (
-                (result.get("metadata") or {}).get("technique_id")
+                metadata.get("technique_id")
+                or metadata.get("cve_id")
                 or result.get("document")
             )
             if result_key not in seen_keys:
