@@ -65,6 +65,8 @@ Retrieve relevant context from knowledge base.
 }
 ```
 
+For exact-known identifiers, callers can also provide `mitre_techniques` or `cve_ids`. CVE IDs in a `cve_database` query are detected automatically and matched against the `cve_id` metadata before semantic retrieval.
+
 **Response:**
 ```json
 {
