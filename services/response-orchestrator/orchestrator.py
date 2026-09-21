@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import desc, select
 
 from models import (
     ActionStatus, ActionType, AdapterType, ApprovalTier,
@@ -42,6 +42,7 @@ from database import (
     db_session,
     DefensePlanModel,
     PlannedActionModel,
+    VerificationResultModel,
 )
 
 
@@ -94,6 +95,205 @@ class ResponseOrchestrator:
         }
 
         # ----- Database Persistence -----
+
+    @staticmethod
+    def _plan_from_rows(
+        db_plan: DefensePlanModel,
+        db_actions: List[PlannedActionModel],
+        db_verification: Optional[VerificationResultModel] = None,
+    ) -> DefensePlan:
+        """Rehydrate a DefensePlan from PostgreSQL rows."""
+        actions = [
+            PlannedAction(
+                action_id=row.action_id,
+                action_type=ActionType(row.action_type),
+                target=row.target,
+                target_hostname=row.target_hostname,
+                adapter=AdapterType(row.adapter),
+                confidence=row.confidence,
+                impact_score=row.impact_score,
+                safety_score=row.safety_score,
+                composite_score=row.composite_score,
+                blast_radius=row.blast_radius,
+                approval_tier=ApprovalTier(row.approval_tier),
+                requires_approval=row.requires_approval,
+                d3fend_technique=row.d3fend_technique or "",
+                d3fend_label=row.d3fend_label or "",
+                counters_techniques=row.counters_techniques or [],
+                status=ActionStatus(row.status),
+                rationale=row.rationale or "",
+                executed_at=row.executed_at,
+                completed_at=row.completed_at,
+                rolled_back_at=row.rolled_back_at,
+                adapter_response=row.adapter_response,
+                error_message=row.error_message,
+                approved_by=row.approved_by,
+                approval_notes=row.approval_notes,
+            )
+            for row in db_actions
+        ]
+
+        verification = None
+        if db_verification is not None:
+            verification = VerificationResult(
+                plan_id=db_verification.plan_id,
+                verified_at=db_verification.verified_at,
+                pre_attack_success_rate=db_verification.pre_attack_success_rate,
+                post_attack_success_rate=db_verification.post_attack_success_rate,
+                risk_reduction_pct=db_verification.risk_reduction_pct,
+                re_simulation_id=db_verification.re_simulation_id,
+                continued_indicators=db_verification.continued_indicators,
+                monitoring_duration_seconds=db_verification.monitoring_duration_seconds,
+                new_alerts_during_monitoring=db_verification.new_alerts_during_monitoring,
+                verification_passed=db_verification.verification_passed,
+                verdict_reason=db_verification.verdict_reason or "",
+            )
+
+        return DefensePlan(
+            plan_id=db_plan.plan_id,
+            incident_id=db_plan.incident_id,
+            simulation_id=db_plan.simulation_id,
+            status=PlanStatus(db_plan.status),
+            created_at=db_plan.created_at,
+            updated_at=db_plan.updated_at,
+            completed_at=db_plan.completed_at,
+            incident_summary=db_plan.incident_summary or "",
+            detected_techniques=db_plan.detected_techniques or [],
+            kill_chain_stage=db_plan.kill_chain_stage or "",
+            source_ips=db_plan.source_ips or [],
+            dest_ips=db_plan.dest_ips or [],
+            pre_defense_risk=db_plan.pre_defense_risk,
+            post_defense_risk=db_plan.post_defense_risk,
+            simulation_summary=db_plan.simulation_summary,
+            actions=actions,
+            rationale=db_plan.rationale or "",
+            verification=verification,
+            total_actions=db_plan.total_actions,
+            auto_executed_count=db_plan.auto_executed_count,
+            human_approved_count=db_plan.human_approved_count,
+            dry_run=db_plan.dry_run,
+        )
+
+    async def _load_plan_from_db(self, plan_id: str) -> Optional[DefensePlan]:
+        """Load one plan and its actions from PostgreSQL into the local cache."""
+        try:
+            async with db_session() as session:
+                result = await session.execute(
+                    select(DefensePlanModel).where(
+                        DefensePlanModel.plan_id == plan_id
+                    )
+                )
+                db_plan = result.scalar_one_or_none()
+                if db_plan is None:
+                    return None
+
+                actions_result = await session.execute(
+                    select(PlannedActionModel)
+                    .where(PlannedActionModel.plan_id == plan_id)
+                    .order_by(PlannedActionModel.action_id)
+                )
+                db_actions = actions_result.scalars().all()
+
+                verification_result = await session.execute(
+                    select(VerificationResultModel)
+                    .where(VerificationResultModel.plan_id == plan_id)
+                    .order_by(desc(VerificationResultModel.verified_at))
+                )
+                db_verification = verification_result.scalars().first()
+
+                plan = self._plan_from_rows(
+                    db_plan, db_actions, db_verification
+                )
+                self._plans[plan_id] = plan
+                return plan
+        except Exception as e:
+            logger.error(f"Failed to load plan {plan_id} from DB: {e}")
+            return self._plans.get(plan_id)
+
+    async def _load_plans_from_db(
+        self,
+        status: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[DefensePlan]:
+        """Load plans from PostgreSQL so API reads are worker-independent."""
+        try:
+            async with db_session() as session:
+                stmt = select(DefensePlanModel).order_by(
+                    desc(DefensePlanModel.created_at)
+                ).limit(limit)
+                if status:
+                    stmt = stmt.where(DefensePlanModel.status == status)
+
+                result = await session.execute(stmt)
+                db_plans = result.scalars().all()
+                if not db_plans:
+                    return []
+
+                plan_ids = [p.plan_id for p in db_plans]
+                actions_result = await session.execute(
+                    select(PlannedActionModel)
+                    .where(PlannedActionModel.plan_id.in_(plan_ids))
+                    .order_by(PlannedActionModel.action_id)
+                )
+                action_map: Dict[str, List[PlannedActionModel]] = {
+                    pid: [] for pid in plan_ids
+                }
+                for row in actions_result.scalars().all():
+                    action_map[row.plan_id].append(row)
+
+                verification_result = await session.execute(
+                    select(VerificationResultModel)
+                    .where(VerificationResultModel.plan_id.in_(plan_ids))
+                    .order_by(desc(VerificationResultModel.verified_at))
+                )
+                verification_map: Dict[str, VerificationResultModel] = {}
+                for row in verification_result.scalars().all():
+                    verification_map.setdefault(row.plan_id, row)
+
+                plans = [
+                    self._plan_from_rows(
+                        row,
+                        action_map.get(row.plan_id, []),
+                        verification_map.get(row.plan_id),
+                    )
+                    for row in db_plans
+                ]
+                self._plans.update({p.plan_id: p for p in plans})
+                return plans
+        except Exception as e:
+            logger.error(f"Failed to load plans from DB: {e}")
+            plans = list(self._plans.values())
+            if status:
+                plans = [p for p in plans if p.status.value == status]
+            plans.sort(key=lambda p: p.created_at, reverse=True)
+            return plans[:limit]
+
+    async def _count_active_plans(self) -> int:
+        """Count active plans from PostgreSQL, independent of worker-local cache."""
+        terminal = (
+            PlanStatus.COMPLETED.value,
+            PlanStatus.FAILED.value,
+            PlanStatus.ROLLED_BACK.value,
+        )
+        try:
+            async with db_session() as session:
+                result = await session.execute(
+                    select(DefensePlanModel.plan_id).where(
+                        ~DefensePlanModel.status.in_(terminal)
+                    )
+                )
+                return len(result.scalars().all())
+        except Exception as e:
+            logger.warning(f"Active-plan DB count failed: {e}")
+            return sum(
+                1
+                for p in self._plans.values()
+                if p.status not in (
+                    PlanStatus.COMPLETED,
+                    PlanStatus.FAILED,
+                    PlanStatus.ROLLED_BACK,
+                )
+            )
 
     async def _persist_plan(self, plan: DefensePlan) -> None:
         """Persist a defense plan and its actions to PostgreSQL."""
@@ -173,6 +373,8 @@ class ResponseOrchestrator:
                             rolled_back_at=action.rolled_back_at,
                             adapter_response=action.adapter_response,
                             error_message=action.error_message,
+                            approved_by=action.approved_by,
+                            approval_notes=action.approval_notes,
                         )
                         session.add(db_action)
                     else:
@@ -183,12 +385,45 @@ class ResponseOrchestrator:
                         db_action.rolled_back_at = action.rolled_back_at
                         db_action.adapter_response = action.adapter_response
                         db_action.error_message = action.error_message
-                        db_action.approved_by = getattr(
-                            action, "approved_by", None
+                        db_action.approved_by = action.approved_by
+                        db_action.approval_notes = action.approval_notes
+
+                if plan.verification is not None:
+                    verification = plan.verification
+                    result = await session.execute(
+                        select(VerificationResultModel)
+                        .where(VerificationResultModel.plan_id == plan.plan_id)
+                        .order_by(desc(VerificationResultModel.verified_at))
+                    )
+                    db_verification = result.scalars().first()
+
+                    if db_verification is None:
+                        session.add(
+                            VerificationResultModel(
+                                plan_id=verification.plan_id,
+                                verified_at=verification.verified_at,
+                                pre_attack_success_rate=verification.pre_attack_success_rate,
+                                post_attack_success_rate=verification.post_attack_success_rate,
+                                risk_reduction_pct=verification.risk_reduction_pct,
+                                re_simulation_id=verification.re_simulation_id,
+                                continued_indicators=verification.continued_indicators,
+                                monitoring_duration_seconds=verification.monitoring_duration_seconds,
+                                new_alerts_during_monitoring=verification.new_alerts_during_monitoring,
+                                verification_passed=verification.verification_passed,
+                                verdict_reason=verification.verdict_reason,
+                            )
                         )
-                        db_action.approval_notes = getattr(
-                            action, "approval_notes", None
-                        )
+                    else:
+                        db_verification.verified_at = verification.verified_at
+                        db_verification.pre_attack_success_rate = verification.pre_attack_success_rate
+                        db_verification.post_attack_success_rate = verification.post_attack_success_rate
+                        db_verification.risk_reduction_pct = verification.risk_reduction_pct
+                        db_verification.re_simulation_id = verification.re_simulation_id
+                        db_verification.continued_indicators = verification.continued_indicators
+                        db_verification.monitoring_duration_seconds = verification.monitoring_duration_seconds
+                        db_verification.new_alerts_during_monitoring = verification.new_alerts_during_monitoring
+                        db_verification.verification_passed = verification.verification_passed
+                        db_verification.verdict_reason = verification.verdict_reason
 
 
         except Exception as e:
@@ -219,11 +454,8 @@ class ResponseOrchestrator:
         logger.info(f"Defense triggered for incident {incident_id}")
 
         # Check concurrent plan limit
-        active = [
-            p for p in self._plans.values()
-            if p.status not in (PlanStatus.COMPLETED, PlanStatus.FAILED, PlanStatus.ROLLED_BACK)
-        ]
-        if len(active) >= self.settings.max_concurrent_plans:
+        active_count = await self._count_active_plans()
+        if active_count >= self.settings.max_concurrent_plans:
             raise RuntimeError(
                 f"Max concurrent plans ({self.settings.max_concurrent_plans}) reached. "
                 f"Complete or cancel existing plans first."
@@ -416,7 +648,7 @@ class ResponseOrchestrator:
         notes: Optional[str] = None,
     ) -> PlannedAction:
         """Approve or reject a pending action."""
-        plan = self._plans.get(plan_id)
+        plan = await self._load_plan_from_db(plan_id)
         if not plan:
             raise ValueError(f"Plan {plan_id} not found")
 
@@ -430,6 +662,9 @@ class ResponseOrchestrator:
             raise ValueError(
                 f"Action {action_id} is {action.status.value}, not pending"
             )
+
+        action.approved_by = analyst_id
+        action.approval_notes = notes
 
         if approved:
             plan.human_approved_count += 1
@@ -578,28 +813,26 @@ class ResponseOrchestrator:
 
     # ----- Plan Management -----
 
-    def get_plan(self, plan_id: str) -> Optional[DefensePlan]:
-        """Get a plan by ID."""
-        return self._plans.get(plan_id)
+    async def get_plan(self, plan_id: str) -> Optional[DefensePlan]:
+        """Get a plan from PostgreSQL so reads survive restarts and workers."""
+        return await self._load_plan_from_db(plan_id)
 
-    def get_all_plans(
+    async def get_all_plans(
         self,
         status: Optional[str] = None,
         limit: int = 50,
     ) -> List[DefensePlan]:
-        """Get all plans, optionally filtered by status."""
-        plans = list(self._plans.values())
-        if status:
-            plans = [p for p in plans if p.status.value == status]
-        plans.sort(key=lambda p: p.created_at, reverse=True)
-        return plans[:limit]
+        """Get plans from PostgreSQL, optionally filtered by status."""
+        return await self._load_plans_from_db(status=status, limit=limit)
 
-    def get_pending_approvals(self) -> List[Dict[str, Any]]:
-        """Get all actions across all plans that need human approval."""
+    async def get_pending_approvals(self) -> List[Dict[str, Any]]:
+        """Get all pending approvals from PostgreSQL."""
+        plans = await self._load_plans_from_db(
+            status=PlanStatus.AWAITING_APPROVAL.value,
+            limit=200,
+        )
         pending = []
-        for plan in self._plans.values():
-            if plan.status != PlanStatus.AWAITING_APPROVAL:
-                continue
+        for plan in plans:
             for action in plan.actions:
                 if action.requires_approval and action.status == ActionStatus.PENDING:
                     pending.append({
@@ -615,5 +848,7 @@ class ResponseOrchestrator:
                         "blast_radius": action.blast_radius.value,
                         "rationale": action.rationale,
                         "counters_techniques": action.counters_techniques,
+                        "approved_by": action.approved_by,
+                        "approval_notes": action.approval_notes,
                     })
         return pending
