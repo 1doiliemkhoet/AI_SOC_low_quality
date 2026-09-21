@@ -252,6 +252,26 @@ class EnrichedAlert(BaseModel):
         description="MITRE ATT&CK context from RAG"
     )
 
+    cve_context: Optional[str] = Field(
+        None,
+        description="CVE vulnerability context from RAG"
+    )
+
+    runbook_context: Optional[str] = Field(
+        None,
+        description="Security runbook context from RAG"
+    )
+
+    cve_references: Optional[List[str]] = Field(
+        None,
+        description="CVE identifiers returned by RAG"
+    )
+
+    runbook_references: Optional[List[str]] = Field(
+        None,
+        description="Runbook identifiers returned by RAG"
+    )
+
     similar_incidents: Optional[
         List[str]
     ] = Field(
