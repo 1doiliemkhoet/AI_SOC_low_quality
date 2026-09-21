@@ -17,7 +17,7 @@ from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.responses import JSONResponse
-from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from starlette.responses import Response
 
 from config import get_settings
@@ -47,29 +47,7 @@ logger = logging.getLogger(__name__)
 # Prometheus Metrics
 # ---------------------------------------------------------------------------
 
-PLANS_TRIGGERED = Counter(
-    "defense_plans_triggered_total",
-    "Total defense plans triggered",
-    ["status"],
-)
-PLANS_COMPLETED = Counter(
-    "defense_plans_completed_total",
-    "Total defense plans completed",
-    ["verification_result"],
-)
-ACTIONS_EXECUTED = Counter(
-    "defense_actions_executed_total",
-    "Total defense actions executed",
-    ["action_type", "adapter", "result"],
-)
-PLAN_DURATION = Histogram(
-    "defense_plan_duration_seconds",
-    "Time from plan trigger to completion",
-)
-APPROVAL_LATENCY = Histogram(
-    "defense_approval_latency_seconds",
-    "Time actions spend waiting for human approval",
-)
+from metrics import PLANS_TRIGGERED
 
 # ---------------------------------------------------------------------------
 # Orchestrator instance
