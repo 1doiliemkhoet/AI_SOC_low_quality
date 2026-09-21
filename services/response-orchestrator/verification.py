@@ -248,6 +248,7 @@ class VerificationEngine:
                 "continued_indicators": False,
                 "new_alerts": 0,
                 "duration": check_duration,
+                "monitoring_error": str(e),
             }
 
     async def _check_wazuh_alerts(
