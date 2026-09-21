@@ -9,6 +9,7 @@ Date: 2025-10-22
 
 import pytest
 import asyncio
+import httpx
 
 
 # ============================================================================
@@ -38,13 +39,13 @@ class TestAlertTriageOllamaIntegration:
                 assert "confidence" in data
                 assert "summary" in data
                 assert data["alert_id"] == sample_security_alert["alert_id"]
-            elif response.status_code == 503:
-                pytest.skip("Ollama service unavailable")
+            elif response.status_code in (502, 503, 504):
+                pytest.skip(f"Alert Triage/Ollama unavailable (HTTP {response.status_code})")
             else:
                 pytest.fail(f"Unexpected status code: {response.status_code}")
 
-        except Exception as e:
-            pytest.skip(f"Services not running: {e}")
+        except (httpx.RequestError, asyncio.TimeoutError) as e:
+            pytest.skip(f"Services unavailable: {e}")
 
     async def test_ollama_fallback_model(self, http_client, alert_triage_url, sample_security_alert):
         """Test fallback to secondary model when primary fails"""
@@ -58,14 +59,17 @@ class TestAlertTriageOllamaIntegration:
                 timeout=30.0
             )
 
-            if response.status_code == 200:
-                data = response.json()
-                # Check which model was used
-                assert "model_used" in data
-                assert data["model_used"] in ["foundation-sec-8b:latest", "llama3.1:8b"]
+            if response.status_code in (502, 503, 504):
+                pytest.skip(f"Alert Triage/Ollama unavailable (HTTP {response.status_code})")
+            if response.status_code != 200:
+                pytest.fail(f"Unexpected status code: {response.status_code}")
 
-        except Exception as e:
-            pytest.skip(f"Services not running: {e}")
+            data = response.json()
+            assert "model_used" in data
+            assert data["model_used"] in ["foundation-sec-8b", "llama3.1:8b"]
+
+        except (httpx.RequestError, asyncio.TimeoutError) as e:
+            pytest.skip(f"Services unavailable: {e}")
 
 
 # ============================================================================
@@ -86,15 +90,19 @@ class TestRAGChromaDBIntegration:
                 timeout=10.0
             )
 
-            if response.status_code == 200:
-                data = response.json()
-                assert "query" in data
-                assert "results" in data
-                assert "total_results" in data
-                assert data["query"] == sample_mitre_query["query"]
+            if response.status_code in (502, 503, 504):
+                pytest.skip(f"RAG service unavailable (HTTP {response.status_code})")
+            if response.status_code != 200:
+                pytest.fail(f"Unexpected RAG service status: {response.status_code}")
 
-        except Exception as e:
-            pytest.skip(f"Services not running: {e}")
+            data = response.json()
+            assert "query" in data
+            assert "results" in data
+            assert "total_results" in data
+            assert data["query"] == sample_mitre_query["query"]
+
+        except (httpx.RequestError, asyncio.TimeoutError) as e:
+            pytest.skip(f"RAG service unavailable: {e}")
 
     async def test_document_ingestion(self, http_client, rag_service_url):
         """Test document ingestion into ChromaDB"""
@@ -113,12 +121,16 @@ class TestRAGChromaDBIntegration:
                 timeout=10.0
             )
 
-            if response.status_code == 200:
-                data = response.json()
-                assert "status" in data
+            if response.status_code in (502, 503, 504):
+                pytest.skip(f"RAG service unavailable (HTTP {response.status_code})")
+            if response.status_code != 200:
+                pytest.fail(f"Unexpected RAG service status: {response.status_code}")
 
-        except Exception as e:
-            pytest.skip(f"Services not running: {e}")
+            data = response.json()
+            assert "status" in data
+
+        except (httpx.RequestError, asyncio.TimeoutError) as e:
+            pytest.skip(f"RAG service unavailable: {e}")
 
 
 # ============================================================================
@@ -232,11 +244,15 @@ class TestDataFlow:
                 timeout=30.0
             )
 
-            if response.status_code == 200:
-                triage_result = response.json()
+            if response.status_code in (502, 503, 504):
+                pytest.skip(f"Alert Triage service unavailable (HTTP {response.status_code})")
+            if response.status_code != 200:
+                pytest.fail(f"Unexpected Alert Triage status: {response.status_code}")
 
-                # Step 2: Validate triage result structure
-                assert triage_result["severity"] in ["critical", "high", "medium", "low", "info"]
+            triage_result = response.json()
+
+            # Step 2: Validate triage result structure
+            assert triage_result["severity"] in ["critical", "high", "medium", "low", "informational"]
                 assert 0.0 <= triage_result["confidence"] <= 1.0
 
                 # Step 3: Create TheHive case (when integrated)
