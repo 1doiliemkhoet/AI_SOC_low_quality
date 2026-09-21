@@ -86,10 +86,11 @@ class VerificationEngine:
 
         continued = monitor_result.get("continued_indicators", False)
         new_alerts = monitor_result.get("new_alerts", 0)
+        monitoring_error = monitor_result.get("monitoring_error")
 
         # Verdict logic
         sim_passed = reduction_pct >= self.risk_reduction_threshold
-        monitor_passed = not continued
+        monitor_passed = not continued and not monitoring_error
 
         if sim_passed and monitor_passed:
             passed = True
@@ -98,6 +99,13 @@ class VerificationEngine:
                 f"{reduction_pct*100:.1f}% (from {pre_rate*100:.1f}% to "
                 f"{post_rate*100:.1f}%). No continued attack indicators "
                 f"detected in {self.monitoring_duration_seconds}s monitoring window."
+            )
+        elif monitoring_error:
+            passed = False
+            reason = (
+                f"Verification FAILED. Wazuh monitoring was unavailable: "
+                f"{monitoring_error}. A monitoring failure is not treated as "
+                f"evidence that the threat was neutralized."
             )
         elif sim_passed and not monitor_passed:
             passed = False
@@ -286,4 +294,4 @@ class VerificationEngine:
 
         except Exception as e:
             logger.warning(f"Wazuh alert check failed: {e}")
-            return []
+            raise RuntimeError(f"Wazuh alert monitoring query failed: {e}") from e
