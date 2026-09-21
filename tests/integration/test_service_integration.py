@@ -68,11 +68,11 @@ class TestAlertTriageOllamaIntegration:
             expected_models = {
                 os.getenv("TRIAGE_PRIMARY_MODEL"),
                 os.getenv("TRIAGE_FALLBACK_MODEL"),
-            }
-            expected_models = {m for m in expected_models if m} or {
+                "llama3.2:3b",
                 "foundation-sec-8b",
                 "llama3.1:8b",
             }
+            expected_models = {m for m in expected_models if m}
             assert data["model_used"] in expected_models
 
         except (httpx.RequestError, asyncio.TimeoutError) as e:
