@@ -185,8 +185,9 @@ async def health_check():
 
     active_plans = 0
     if orchestrator:
+        plans = await orchestrator.get_all_plans(limit=200)
         active_plans = len([
-            p for p in orchestrator.get_all_plans()
+            p for p in plans
             if p.status not in (PlanStatus.COMPLETED, PlanStatus.FAILED, PlanStatus.ROLLED_BACK)
         ])
 
@@ -272,7 +273,7 @@ async def list_plans(
     if not orchestrator:
         raise HTTPException(status_code=503, detail="Orchestrator not initialized")
 
-    plans = orchestrator.get_all_plans(status=status_filter, limit=limit)
+    plans = await orchestrator.get_all_plans(status=status_filter, limit=limit)
     return [
         PlanSummary(
             plan_id=p.plan_id,
@@ -304,7 +305,7 @@ async def get_plan(plan_id: str):
     if not orchestrator:
         raise HTTPException(status_code=503, detail="Orchestrator not initialized")
 
-    plan = orchestrator.get_plan(plan_id)
+    plan = await orchestrator.get_plan(plan_id)
     if not plan:
         raise HTTPException(status_code=404, detail=f"Plan {plan_id} not found")
     return plan
@@ -328,7 +329,7 @@ async def list_pending_approvals():
     """
     if not orchestrator:
         raise HTTPException(status_code=503, detail="Orchestrator not initialized")
-    return orchestrator.get_pending_approvals()
+    return await orchestrator.get_pending_approvals()
 
 
 @app.post(
