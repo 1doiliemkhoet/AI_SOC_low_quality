@@ -282,7 +282,8 @@ class AIClient:
                         "query": query,
                         "collection": "mitre_attack",
                         "top_k": 3,
-                        "min_similarity": 0.5
+                        "min_similarity": 0.5,
+                        "mitre_techniques": mitre_techniques or []
                     },
                     timeout=self.ai_timeout
                 )
