@@ -167,6 +167,51 @@ class VectorStore:
             logger.exception(e)
             return False
 
+    async def get_by_metadata(
+        self,
+        collection_name: str,
+        metadata_filter: Dict[str, Any],
+        top_k: int = 1,
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieve exact documents using ChromaDB metadata filters.
+
+        This path intentionally avoids embedding generation because an
+        identifier match (MITRE/CVE) is deterministic metadata lookup.
+        """
+        try:
+            if not self.client:
+                logger.error("ChromaDB client not initialized")
+                return []
+
+            collection = self.client.get_collection(collection_name)
+            results = collection.get(
+                where=metadata_filter,
+                limit=top_k,
+                include=["documents", "metadatas"],
+            )
+
+            documents = results.get("documents") or []
+            metadatas = results.get("metadatas") or []
+            ids = results.get("ids") or []
+
+            exact_results = []
+            for idx, document in enumerate(documents):
+                metadata = metadatas[idx] if idx < len(metadatas) else {}
+                exact_results.append({
+                    "document": document,
+                    "metadata": metadata or {},
+                    "similarity_score": 1.0,
+                    "id": ids[idx] if idx < len(ids) else None,
+                })
+
+            return exact_results
+
+        except Exception as e:
+            logger.error(f"Metadata lookup failed: {e}")
+            logger.exception(e)
+            return []
+
     async def query(
         self,
         collection_name: str,
