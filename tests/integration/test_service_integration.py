@@ -173,8 +173,8 @@ class TestMLAlertTriageIntegration:
                 triage_data = triage_response.json()
                 assert "severity" in triage_data
 
-        except Exception as e:
-            pytest.skip(f"Services not running: {e}")
+        except (httpx.RequestError, asyncio.TimeoutError) as e:
+            pytest.skip(f"Services unavailable: {e}")
 
 
 # ============================================================================
@@ -221,8 +221,8 @@ class TestMultiServiceHealth:
                 if "ollama_connected" in data:
                     print(f"\n🔗 Alert Triage → Ollama: {'✅' if data['ollama_connected'] else '❌'}")
 
-        except Exception as e:
-            pytest.skip(f"Services not running: {e}")
+        except (httpx.RequestError, asyncio.TimeoutError) as e:
+            pytest.skip(f"Services unavailable: {e}")
 
 
 # ============================================================================
@@ -259,8 +259,8 @@ class TestDataFlow:
                 # This would send to TheHive API
                 # TODO: Implement when TheHive is deployed
 
-        except Exception as e:
-            pytest.skip(f"Services not running: {e}")
+        except (httpx.RequestError, asyncio.TimeoutError) as e:
+            pytest.skip(f"Services unavailable: {e}")
 
     async def test_log_to_summary_workflow(self, http_client, sample_log_batch):
         """Test: Logs → Summarization → ChromaDB"""
@@ -303,8 +303,8 @@ class TestSystemPerformance:
             # At least 80% should succeed
             assert successful >= len(alerts) * 0.8
 
-        except Exception as e:
-            pytest.skip(f"Services not running: {e}")
+        except (httpx.RequestError, asyncio.TimeoutError) as e:
+            pytest.skip(f"Services unavailable: {e}")
 
     async def test_throughput(self, http_client, ml_inference_url, sample_network_flow):
         """Test system throughput (predictions/second)"""
@@ -331,8 +331,8 @@ class TestSystemPerformance:
             # Should handle at least 10 predictions/second
             assert throughput >= 10
 
-        except Exception as e:
-            pytest.skip(f"Services not running: {e}")
+        except (httpx.RequestError, asyncio.TimeoutError) as e:
+            pytest.skip(f"Services unavailable: {e}")
 
 
 # ============================================================================
@@ -363,8 +363,8 @@ class TestErrorPropagation:
             else:
                 pytest.fail(f"Unexpected status code: {response.status_code}")
 
-        except Exception as e:
-            pytest.skip(f"Services not running: {e}")
+        except (httpx.RequestError, asyncio.TimeoutError) as e:
+            pytest.skip(f"Services unavailable: {e}")
 
     async def test_invalid_data_rejection(self, http_client, alert_triage_url):
         """Test rejection of invalid data"""
@@ -383,8 +383,8 @@ class TestErrorPropagation:
             # Should get 422 Validation Error
             assert response.status_code == 422
 
-        except Exception as e:
-            pytest.skip(f"Services not running: {e}")
+        except (httpx.RequestError, asyncio.TimeoutError) as e:
+            pytest.skip(f"Services unavailable: {e}")
 
 
 if __name__ == "__main__":
