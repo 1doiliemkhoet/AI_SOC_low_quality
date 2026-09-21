@@ -135,8 +135,12 @@ class VectorStore:
 
             logger.info(f"Adding {len(documents)} documents to {collection_name}")
 
-            # Get collection
-            collection = self.client.get_collection(collection_name)
+            # Get existing collection or create it for ad-hoc ingestion targets.
+            try:
+                collection = self.client.get_collection(collection_name)
+            except Exception:
+                logger.info(f"Collection {collection_name} not found; creating it")
+                collection = self.client.create_collection(name=collection_name)
 
             # Generate IDs if not provided
             if ids is None:
