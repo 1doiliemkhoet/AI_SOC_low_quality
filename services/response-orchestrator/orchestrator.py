@@ -44,6 +44,12 @@ from database import (
     PlannedActionModel,
     VerificationResultModel,
 )
+from metrics import (
+    ACTIONS_EXECUTED,
+    APPROVAL_LATENCY,
+    PLANS_COMPLETED,
+    PLAN_DURATION,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -634,6 +640,12 @@ class ResponseOrchestrator:
             action.error_message = result.error or result.detail
             action.adapter_response = result.to_dict()
 
+        ACTIONS_EXECUTED.labels(
+            action_type=action.action_type.value,
+            adapter=action.adapter.value,
+            result="success" if result.success else "failed",
+        ).inc()
+
         plan.updated_at = datetime.utcnow()
         return result
 
@@ -665,6 +677,14 @@ class ResponseOrchestrator:
 
         action.approved_by = analyst_id
         action.approval_notes = notes
+        approval_started_at = plan.updated_at or plan.created_at
+
+        APPROVAL_LATENCY.observe(
+            max(
+                (datetime.utcnow() - approval_started_at).total_seconds(),
+                0.0,
+            )
+        )
 
         if approved:
             plan.human_approved_count += 1
@@ -743,6 +763,18 @@ class ResponseOrchestrator:
             plan.completed_at = datetime.utcnow()
 
         plan.updated_at = datetime.utcnow()
+
+        PLANS_COMPLETED.labels(
+            verification_result=(
+                "passed"
+                if plan.verification and plan.verification.verification_passed
+                else "failed"
+            )
+        ).inc()
+        PLAN_DURATION.observe(
+            max((plan.updated_at - plan.created_at).total_seconds(), 0.0)
+        )
+
         await self._persist_plan(plan)
 
     async def _rollback_plan(self, plan: DefensePlan) -> bool:
