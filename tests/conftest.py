@@ -10,6 +10,7 @@ Date: 2025-10-22
 import os
 import sys
 import pytest
+import pytest_asyncio
 import asyncio
 from pathlib import Path
 from typing import AsyncGenerator, Generator
@@ -172,7 +173,7 @@ def mock_ml_prediction() -> dict:
 # HTTP Client Fixtures
 # ============================================================================
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def http_client():
     """Async HTTP client for API testing"""
     import httpx
