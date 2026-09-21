@@ -9,6 +9,7 @@ Date: 2025-10-22
 
 import pytest
 import asyncio
+import httpx
 
 
 # ============================================================================
@@ -42,8 +43,10 @@ class TestCompleteAlertWorkflow:
                 timeout=10.0
             )
 
+            if ml_response.status_code in (502, 503, 504):
+                pytest.skip(f"ML service unavailable (HTTP {ml_response.status_code})")
             if ml_response.status_code != 200:
-                pytest.skip("ML service not running")
+                pytest.fail(f"Unexpected ML service status: {ml_response.status_code}")
 
             ml_data = ml_response.json()
             print(f"   Prediction: {ml_data['prediction']}")
@@ -67,8 +70,10 @@ class TestCompleteAlertWorkflow:
                 timeout=30.0
             )
 
+            if triage_response.status_code in (502, 503, 504):
+                pytest.skip(f"Alert Triage service unavailable (HTTP {triage_response.status_code})")
             if triage_response.status_code != 200:
-                pytest.skip("Alert triage service not running")
+                pytest.fail(f"Unexpected Alert Triage status: {triage_response.status_code}")
 
             triage_data = triage_response.json()
             print(f"   Severity: {triage_data['severity'].upper()}")
@@ -98,8 +103,8 @@ class TestCompleteAlertWorkflow:
 
             print("\n✅ Complete workflow successful!")
 
-        except Exception as e:
-            pytest.skip(f"E2E workflow failed: {e}")
+        except (httpx.RequestError, asyncio.TimeoutError) as e:
+            pytest.skip(f"E2E dependency unavailable: {e}")
 
 
 # ============================================================================
@@ -149,8 +154,8 @@ class TestBatchProcessing:
             assert success_rate >= 80, f"Success rate too low: {success_rate:.1f}%"
             assert duration < 60, f"Batch processing too slow: {duration:.2f}s"
 
-        except Exception as e:
-            pytest.skip(f"Batch processing test failed: {e}")
+        except (httpx.RequestError, asyncio.TimeoutError) as e:
+            pytest.skip(f"Batch processing dependency unavailable: {e}")
 
 
 # ============================================================================
@@ -168,14 +173,14 @@ class TestIncidentResponseWorkflow:
             "alert_id": "critical-001",
             "timestamp": "2025-10-22T10:30:00Z",
             "source_ip": "192.168.1.100",
-            "destination_ip": "10.0.0.50",
+            "dest_ip": "10.0.0.50",
             "rule_id": "100045",
             "rule_level": 15,  # Critical level
             "rule_description": "Active ransomware encryption detected",
-            "full_log": "Oct 22 10:30:00 server ransomware.exe: Encrypting files...",
+            "full_log": {"message": "Oct 22 10:30:00 server ransomware.exe: Encrypting files..."},
             "agent_name": "file-server-01",
             "mitre_tactic": "Impact",
-            "mitre_technique": "T1486"
+            "mitre_technique": ["T1486"]
         }
 
         try:
@@ -186,6 +191,11 @@ class TestIncidentResponseWorkflow:
                 json=critical_alert,
                 timeout=30.0
             )
+
+            if response.status_code in (502, 503, 504):
+                pytest.skip(f"Alert Triage service unavailable (HTTP {response.status_code})")
+            if response.status_code != 200:
+                pytest.fail(f"Unexpected Alert Triage status: {response.status_code}")
 
             if response.status_code == 200:
                 data = response.json()
@@ -203,8 +213,8 @@ class TestIncidentResponseWorkflow:
 
                 print("   ✅ Critical alert properly escalated")
 
-        except Exception as e:
-            pytest.skip(f"Critical alert test failed: {e}")
+        except (httpx.RequestError, asyncio.TimeoutError) as e:
+            pytest.skip(f"Alert Triage dependency unavailable: {e}")
 
 
 # ============================================================================
@@ -236,6 +246,11 @@ class TestRAGEnhancedWorkflow:
                 timeout=10.0
             )
 
+            if rag_response.status_code in (502, 503, 504):
+                pytest.skip(f"RAG service unavailable (HTTP {rag_response.status_code})")
+            if rag_response.status_code != 200:
+                pytest.fail(f"Unexpected RAG service status: {rag_response.status_code}")
+
             if rag_response.status_code == 200:
                 rag_data = rag_response.json()
                 print(f"   ✓ Retrieved {rag_data['total_results']} relevant documents")
@@ -249,13 +264,18 @@ class TestRAGEnhancedWorkflow:
                     timeout=30.0
                 )
 
+                if triage_response.status_code in (502, 503, 504):
+                    pytest.skip(f"Alert Triage service unavailable (HTTP {triage_response.status_code})")
+                if triage_response.status_code != 200:
+                    pytest.fail(f"Unexpected Alert Triage status: {triage_response.status_code}")
+
                 if triage_response.status_code == 200:
                     triage_data = triage_response.json()
                     print(f"   ✓ Analysis complete: {triage_data['severity']}")
                     print("   ✅ RAG-enhanced workflow successful")
 
-        except Exception as e:
-            pytest.skip(f"RAG workflow test failed: {e}")
+        except (httpx.RequestError, asyncio.TimeoutError) as e:
+            pytest.skip(f"RAG dependency unavailable: {e}")
 
 
 # ============================================================================
@@ -302,8 +322,8 @@ class TestSystemResilience:
 
             print("   ✅ Service recovered successfully")
 
-        except Exception as e:
-            pytest.skip(f"Resilience test failed: {e}")
+        except (httpx.RequestError, asyncio.TimeoutError) as e:
+            pytest.skip(f"Alert Triage dependency unavailable: {e}")
 
     async def test_timeout_handling(self, http_client, alert_triage_url, sample_security_alert):
         """Test timeout handling"""
@@ -317,10 +337,10 @@ class TestSystemResilience:
                 timeout=0.001  # 1ms - will timeout
             )
 
-        except asyncio.TimeoutError:
+        except httpx.TimeoutException:
             print("   ✅ Timeout handled correctly")
-        except Exception as e:
-            print(f"   ℹ️  Expected timeout, got: {type(e).__name__}")
+        else:
+            pytest.fail("Expected the 1ms request to time out")
 
 
 # ============================================================================
@@ -343,12 +363,20 @@ class TestEndToEndPerformance:
             # ML Inference Latency
             start = time.time()
             ml_response = await http_client.post(f"{ml_inference_url}/predict", json=sample_network_flow, timeout=10.0)
+            if ml_response.status_code in (502, 503, 504):
+                pytest.skip(f"ML service unavailable (HTTP {ml_response.status_code})")
+            if ml_response.status_code != 200:
+                pytest.fail(f"Unexpected ML service status: {ml_response.status_code}")
             ml_latency = (time.time() - start) * 1000
             print(f"   ML Inference: {ml_latency:.2f}ms")
 
             # Alert Triage Latency
             start = time.time()
             triage_response = await http_client.post(f"{alert_triage_url}/analyze", json=sample_security_alert, timeout=30.0)
+            if triage_response.status_code in (502, 503, 504):
+                pytest.skip(f"Alert Triage service unavailable (HTTP {triage_response.status_code})")
+            if triage_response.status_code != 200:
+                pytest.fail(f"Unexpected Alert Triage status: {triage_response.status_code}")
             triage_latency = (time.time() - start) * 1000
             print(f"   Alert Triage: {triage_latency:.2f}ms")
 
@@ -360,8 +388,8 @@ class TestEndToEndPerformance:
             assert ml_latency < 200, f"ML inference too slow: {ml_latency:.2f}ms"
             assert triage_latency < 30000, f"Triage too slow: {triage_latency:.2f}ms"
 
-        except Exception as e:
-            pytest.skip(f"Performance benchmark failed: {e}")
+        except (httpx.RequestError, asyncio.TimeoutError) as e:
+            pytest.skip(f"Performance dependency unavailable: {e}")
 
 
 if __name__ == "__main__":
