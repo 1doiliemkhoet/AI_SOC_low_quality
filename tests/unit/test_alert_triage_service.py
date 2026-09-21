@@ -7,6 +7,7 @@ Mission: OPERATION TEST-FORTRESS
 Date: 2025-10-22
 """
 
+import json
 import pytest
 import sys
 from pathlib import Path
@@ -56,14 +57,27 @@ class TestTriageResponseModel:
         response = TriageResponse(
             alert_id="test-001",
             severity="high",
+            category="intrusion_attempt",
             confidence=0.95,
             summary="Brute force attack detected",
+            detailed_analysis="Multiple failed SSH login attempts from a suspicious source.",
+            potential_impact="Potential unauthorized access.",
+            is_true_positive=True,
             mitre_tactics=["Credential Access"],
             mitre_techniques=["T1110.001"],
-            iocs=["192.168.1.100"],
-            recommendations=["Block source IP"],
+            iocs=[{
+                "ioc_type": "ip",
+                "value": "192.168.1.100",
+                "confidence": 0.95,
+            }],
+            recommendations=[{
+                "action": "Block source IP",
+                "priority": 1,
+                "rationale": "Stop repeated brute-force attempts.",
+            }],
+            investigation_priority=2,
             model_used="llama3.1:8b",
-            processing_time_ms=150
+            processing_time_ms=150,
         )
         assert response.severity == "high"
         assert response.confidence == 0.95
@@ -73,17 +87,25 @@ class TestTriageResponseModel:
         """Test all valid severity levels"""
         severity_levels = ["critical", "high", "medium", "low", "info"]
         for severity in severity_levels:
+            if severity == "info":
+                severity = "informational"
+
             response = TriageResponse(
                 alert_id="test-001",
                 severity=severity,
+                category="other",
                 confidence=0.8,
                 summary="Test",
+                detailed_analysis="Test analysis",
+                potential_impact="Test impact",
+                is_true_positive=False,
                 mitre_tactics=[],
                 mitre_techniques=[],
                 iocs=[],
                 recommendations=[],
+                investigation_priority=3,
                 model_used="test",
-                processing_time_ms=100
+                processing_time_ms=100,
             )
             assert response.severity == severity
 
@@ -130,11 +152,38 @@ class TestOllamaClient:
 
         mock_response = Mock()
         mock_response.status_code = 200
-        mock_response.json.return_value = mock_ollama_response
+        mock_response.json.return_value = {
+            "response": json.dumps({
+                "severity": "high",
+                "category": "intrusion_attempt",
+                "confidence": 0.95,
+                "summary": "Brute force attack detected",
+                "detailed_analysis": "Repeated failed SSH login attempts indicate credential guessing.",
+                "potential_impact": "Potential unauthorized access to the target account.",
+                "is_true_positive": True,
+                "iocs": [{
+                    "ioc_type": "ip",
+                    "value": "192.168.1.100",
+                    "confidence": 0.95,
+                }],
+                "mitre_techniques": ["T1110.001"],
+                "mitre_tactics": ["credential-access"],
+                "recommendations": [{
+                    "action": "Block source IP",
+                    "priority": 1,
+                    "rationale": "Stop repeated brute-force attempts.",
+                }],
+                "investigation_priority": 2,
+                "estimated_analyst_time": 15,
+            }),
+            "model": "llama3.1:8b",
+            "done": True,
+        }
 
         mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
         client = OllamaClient()
+        client.ml_client.predict_with_fallback = AsyncMock(return_value=None)
         alert = SecurityAlert(**sample_security_alert)
         result = await client.analyze_alert(alert)
 
@@ -199,16 +248,16 @@ class TestConfiguration:
         from config import Settings
 
         settings = Settings()
-        assert settings.service_name == "Alert Triage Service"
+        assert settings.service_name == "alert-triage"
         assert settings.service_version == "1.0.0"
-        assert settings.primary_model == "foundation-sec-8b:latest"
+        assert settings.primary_model == "foundation-sec-8b"
 
     def test_environment_override(self, monkeypatch):
         """Test environment variable overrides"""
         from config import Settings
 
-        monkeypatch.setenv("OLLAMA_HOST", "http://custom-ollama:11434")
-        monkeypatch.setenv("PRIMARY_MODEL", "custom-model:latest")
+        monkeypatch.setenv("TRIAGE_OLLAMA_HOST", "http://custom-ollama:11434")
+        monkeypatch.setenv("TRIAGE_PRIMARY_MODEL", "custom-model:latest")
 
         settings = Settings()
         assert settings.ollama_host == "http://custom-ollama:11434"
@@ -260,21 +309,18 @@ class TestErrorHandling:
             )
 
     def test_negative_rule_level(self):
-        """Test handling of negative rule level"""
-        # Current model doesn't validate this, but it should
-        alert = SecurityAlert(
-            alert_id="test-001",
-            timestamp="2025-10-22T10:30:00Z",
-            source_ip="192.168.1.1",
-            destination_ip="10.0.0.1",
-            rule_id="100",
-            rule_level=-1,  # Invalid
-            rule_description="Test",
-            full_log="test log",
-            agent_name="test-agent"
-        )
-        # TODO: Add validation to reject negative rule levels
-        assert alert.rule_level == -1
+        """Test negative rule level is rejected by the current schema"""
+        with pytest.raises(Exception):
+            SecurityAlert(
+                alert_id="test-001",
+                timestamp="2025-10-22T10:30:00Z",
+                source_ip="192.168.1.1",
+                dest_ip="10.0.0.1",
+                rule_id="100",
+                rule_level=-1,
+                rule_description="Test",
+                full_log={"message": "test log"},
+            )
 
     def test_confidence_out_of_range(self):
         """Test confidence score validation"""
