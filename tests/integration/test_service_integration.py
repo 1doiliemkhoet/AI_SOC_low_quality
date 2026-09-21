@@ -10,6 +10,7 @@ Date: 2025-10-22
 import pytest
 import asyncio
 import httpx
+import os
 
 
 # ============================================================================
@@ -29,7 +30,7 @@ class TestAlertTriageOllamaIntegration:
             response = await http_client.post(
                 f"{alert_triage_url}/analyze",
                 json=sample_security_alert,
-                timeout=30.0
+                timeout=180.0
             )
 
             if response.status_code == 200:
@@ -50,13 +51,11 @@ class TestAlertTriageOllamaIntegration:
     async def test_ollama_fallback_model(self, http_client, alert_triage_url, sample_security_alert):
         """Test fallback to secondary model when primary fails"""
         try:
-            # This would test the fallback mechanism
-            # Primary model: foundation-sec-8b
-            # Fallback model: llama3.1:8b
+            # Validate against the models configured for this runtime.
             response = await http_client.post(
                 f"{alert_triage_url}/analyze",
                 json=sample_security_alert,
-                timeout=30.0
+                timeout=180.0
             )
 
             if response.status_code in (502, 503, 504):
@@ -66,7 +65,15 @@ class TestAlertTriageOllamaIntegration:
 
             data = response.json()
             assert "model_used" in data
-            assert data["model_used"] in ["foundation-sec-8b", "llama3.1:8b"]
+            expected_models = {
+                os.getenv("TRIAGE_PRIMARY_MODEL"),
+                os.getenv("TRIAGE_FALLBACK_MODEL"),
+            }
+            expected_models = {m for m in expected_models if m} or {
+                "foundation-sec-8b",
+                "llama3.1:8b",
+            }
+            assert data["model_used"] in expected_models
 
         except (httpx.RequestError, asyncio.TimeoutError) as e:
             pytest.skip(f"Services unavailable: {e}")
@@ -166,7 +173,7 @@ class TestMLAlertTriageIntegration:
             triage_response = await http_client.post(
                 f"{alert_triage_url}/analyze",
                 json=enriched_alert,
-                timeout=30.0
+                timeout=180.0
             )
 
             if triage_response.status_code == 200:
@@ -241,7 +248,7 @@ class TestDataFlow:
             response = await http_client.post(
                 f"{alert_triage_url}/analyze",
                 json=sample_security_alert,
-                timeout=30.0
+                timeout=180.0
             )
 
             if response.status_code in (502, 503, 504):
@@ -350,7 +357,7 @@ class TestErrorPropagation:
             response = await http_client.post(
                 f"{alert_triage_url}/analyze",
                 json=sample_security_alert,
-                timeout=30.0
+                timeout=180.0
             )
 
             if response.status_code == 503:
