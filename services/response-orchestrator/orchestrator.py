@@ -713,12 +713,19 @@ class ResponseOrchestrator:
             else:
                 # Check if auto-rollback is enabled
                 if self.settings.auto_rollback_on_verification_failure:
-                    await self._rollback_plan(plan)
-                    plan.status = PlanStatus.ROLLED_BACK
-                    logger.warning(
-                        f"Plan {plan.plan_id} ROLLED BACK — "
-                        f"verification failed: {verification.verdict_reason[:100]}"
-                    )
+                    rollback_ok = await self._rollback_plan(plan)
+                    if rollback_ok:
+                        plan.status = PlanStatus.ROLLED_BACK
+                        logger.warning(
+                            f"Plan {plan.plan_id} ROLLED BACK — "
+                            f"verification failed: {verification.verdict_reason[:100]}"
+                        )
+                    else:
+                        plan.status = PlanStatus.FAILED
+                        logger.error(
+                            f"Plan {plan.plan_id} rollback incomplete — "
+                            f"verification failed: {verification.verdict_reason[:100]}"
+                        )
                 else:
                     plan.status = PlanStatus.COMPLETED
                     plan.completed_at = datetime.utcnow()
@@ -738,16 +745,33 @@ class ResponseOrchestrator:
         plan.updated_at = datetime.utcnow()
         await self._persist_plan(plan)
 
-    async def _rollback_plan(self, plan: DefensePlan) -> None:
+    async def _rollback_plan(self, plan: DefensePlan) -> bool:
         """Rollback all completed actions in reverse order."""
         reversed_actions = [
             a for a in reversed(plan.actions)
             if a.status == ActionStatus.COMPLETED
         ]
 
+        if not reversed_actions:
+            return True
+
+        rollback_ok = True
+
         for action in reversed_actions:
+            if plan.dry_run:
+                action.status = ActionStatus.ROLLED_BACK
+                action.rolled_back_at = datetime.utcnow()
+                logger.info(
+                    f"[DRY RUN] Rolled back: {action.action_type.value} on {action.target}"
+                )
+                continue
+
             adapter = self._adapters.get(action.adapter.value)
             if not adapter:
+                rollback_ok = False
+                logger.error(
+                    f"Rollback failed for {action.action_id}: no adapter for {action.adapter.value}"
+                )
                 continue
 
             try:
@@ -761,11 +785,15 @@ class ResponseOrchestrator:
                         f"Rolled back: {action.action_type.value} on {action.target}"
                     )
                 else:
+                    rollback_ok = False
                     logger.error(
                         f"Rollback failed for {action.action_id}: {result.error}"
                     )
             except Exception as e:
+                rollback_ok = False
                 logger.error(f"Rollback error for {action.action_id}: {e}")
+
+        return rollback_ok
 
     # ----- Feedback Recording -----
 
