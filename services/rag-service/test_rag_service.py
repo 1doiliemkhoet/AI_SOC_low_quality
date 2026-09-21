@@ -1,201 +1,237 @@
 """
-RAG Service Integration Test
+RAG Service Integration Tests
 AI-Augmented SOC
 
-Tests the complete RAG service implementation:
-- ChromaDB connection
-- Embedding generation
-- Document ingestion
-- Semantic search
-- MITRE ATT&CK ingestion
+Run inside the rag-service container:
+    python -m pytest /app/test_rag_service.py -q
+
+These tests cover the production RAG API plus direct VectorStore operations.
+They intentionally avoid mutating the populated production collections.
 """
 
-import logging
-import asyncio
+import os
+from uuid import uuid4
+
+import httpx
+import pytest
+
 from embeddings import EmbeddingEngine
 from vector_store import VectorStore
-from knowledge_base import KnowledgeBaseManager
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 
-async def test_embedding_engine():
-    """Test embedding generation"""
-    logger.info("\n" + "="*60)
-    logger.info("TEST 1: Embedding Engine")
-    logger.info("="*60)
+RAG_BASE_URL = os.getenv("RAG_TEST_BASE_URL", "http://localhost:8000")
+CHROMA_HOST = os.getenv("RAG_TEST_CHROMA_HOST", "chromadb")
+CHROMA_PORT = int(os.getenv("RAG_TEST_CHROMA_PORT", "8000"))
 
-    engine = EmbeddingEngine()
 
-    # Test single embedding
-    text = "SSH brute force attack from external IP"
-    embedding = engine.embed_text(text)
+@pytest.fixture(scope="module")
+def embedding_engine():
+    return EmbeddingEngine()
 
-    logger.info(f"✓ Generated embedding for: '{text}'")
-    logger.info(f"✓ Embedding dimensions: {len(embedding)}")
-    assert len(embedding) == 384, "Embedding should be 384 dimensions"
 
-    # Test batch embedding
-    texts = [
-        "Malware detected on endpoint",
-        "Suspicious network traffic",
-        "Failed login attempts"
-    ]
-    embeddings = engine.embed_batch(texts)
+@pytest.fixture(scope="module")
+def vector_store(embedding_engine):
+    return VectorStore(
+        embedding_engine,
+        host=CHROMA_HOST,
+        port=CHROMA_PORT,
+    )
 
-    logger.info(f"✓ Generated {len(embeddings)} batch embeddings")
-    logger.info(f"✓ Batch shape: {embeddings.shape}")
-    assert embeddings.shape == (3, 384), "Batch embeddings shape incorrect"
 
-    # Test similarity
-    sim = engine.compute_similarity(
+@pytest.fixture
+async def client():
+    async with httpx.AsyncClient(base_url=RAG_BASE_URL, timeout=60.0) as client:
+        yield client
+
+
+def assert_api_success(response: httpx.Response):
+    assert response.status_code == 200, (
+        f"Expected HTTP 200, got {response.status_code}: {response.text}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_embedding_engine(embedding_engine):
+    embedding = embedding_engine.embed_text(
+        "SSH brute force attack from external IP"
+    )
+    assert len(embedding) == 384
+
+    batch = embedding_engine.embed_batch(
+        [
+            "Malware detected on endpoint",
+            "Suspicious network traffic",
+            "Failed login attempts",
+        ]
+    )
+    assert batch.shape == (3, 384)
+
+    similarity = embedding_engine.compute_similarity(
         "SSH brute force attack",
-        "Multiple failed SSH login attempts"
+        "Multiple failed SSH login attempts",
     )
-    logger.info(f"✓ Similarity score: {sim:.3f}")
-    assert sim > 0.5, "Similar texts should have high similarity"
-
-    logger.info("✓ Embedding Engine: PASSED\n")
+    assert similarity > 0.5
 
 
-async def test_vector_store():
-    """Test ChromaDB vector store operations"""
-    logger.info("="*60)
-    logger.info("TEST 2: Vector Store (ChromaDB)")
-    logger.info("="*60)
+def test_vector_store_connection(vector_store):
+    assert vector_store.is_connected(), (
+        f"ChromaDB connection failed for {CHROMA_HOST}:{CHROMA_PORT}"
+    )
 
-    engine = EmbeddingEngine()
-    store = VectorStore(engine, host="localhost", port=8000)
 
-    # Test connection
-    connected = store.is_connected()
-    logger.info(f"✓ ChromaDB connected: {connected}")
+@pytest.mark.asyncio
+async def test_vector_store_semantic_search(vector_store):
+    collection_name = f"rag-test-{uuid4().hex[:8]}"
+    assert vector_store.create_collection(collection_name)
 
-    if not connected:
-        logger.error("✗ ChromaDB not running. Start with: docker run -p 8000:8000 chromadb/chroma")
-        return False
-
-    # Create test collection
-    collection_name = "test_collection"
-    success = store.create_collection(collection_name)
-    logger.info(f"✓ Created collection: {collection_name}")
-
-    # Add test documents
     documents = [
-        "T1110 Brute Force: Adversaries may use brute force techniques to gain access to accounts",
-        "T1021 Remote Services: Adversaries may use Valid Accounts to log into a service",
-        "T1078 Valid Accounts: Adversaries may obtain and abuse credentials of existing accounts"
+        "T1110 Brute Force: Adversaries may use brute force techniques.",
+        "T1021 Remote Services: Adversaries may use remote services.",
+        "T1078 Valid Accounts: Adversaries may abuse existing accounts.",
     ]
-
     metadatas = [
-        {"technique_id": "T1110", "tactic": "Credential Access"},
-        {"technique_id": "T1021", "tactic": "Lateral Movement"},
-        {"technique_id": "T1078", "tactic": "Persistence"}
+        {"technique_id": "T1110", "type": "test"},
+        {"technique_id": "T1021", "type": "test"},
+        {"technique_id": "T1078", "type": "test"},
     ]
-
-    ids = ["T1110", "T1021", "T1078"]
-
-    success = await store.add_documents(
-        collection_name=collection_name,
-        documents=documents,
-        metadatas=metadatas,
-        ids=ids
-    )
-    logger.info(f"✓ Added {len(documents)} documents")
-
-    # Test semantic search
-    results = await store.query(
-        collection_name=collection_name,
-        query_text="SSH brute force attack",
-        top_k=2,
-        min_similarity=0.0
-    )
-
-    logger.info(f"✓ Query results: {len(results)} documents")
-    for i, result in enumerate(results):
-        logger.info(f"  {i+1}. {result['metadata'].get('technique_id')} - Similarity: {result['similarity_score']:.3f}")
-
-    assert len(results) > 0, "Should find relevant documents"
-    assert results[0]['metadata']['technique_id'] == "T1110", "Most relevant should be T1110 Brute Force"
-
-    # Get collection stats
-    stats = store.get_collection_stats(collection_name)
-    logger.info(f"✓ Collection stats: {stats['count']} documents")
-
-    # Cleanup
-    store.delete_collection(collection_name)
-    logger.info(f"✓ Deleted test collection")
-
-    logger.info("✓ Vector Store: PASSED\n")
-    return True
-
-
-async def test_mitre_ingestion():
-    """Test MITRE ATT&CK ingestion (optional - downloads 10MB)"""
-    logger.info("="*60)
-    logger.info("TEST 3: MITRE ATT&CK Ingestion")
-    logger.info("="*60)
-
-    response = input("Download and ingest MITRE ATT&CK (~10MB, 3000+ techniques)? (y/n): ")
-    if response.lower() != 'y':
-        logger.info("⊘ Skipping MITRE ingestion (user choice)\n")
-        return
-
-    engine = EmbeddingEngine()
-    store = VectorStore(engine, host="localhost", port=8000)
-    kb_manager = KnowledgeBaseManager(store)
-
-    logger.info("Downloading MITRE ATT&CK framework...")
-    result = await kb_manager.ingest_mitre_attack()
-
-    if result['status'] == 'success':
-        logger.info(f"✓ Ingested {result['techniques_ingested']} MITRE techniques")
-
-        # Test query
-        logger.info("\nTesting semantic search on MITRE collection...")
-        results = await store.query(
-            collection_name='mitre_attack',
-            query_text="SSH brute force attack detection",
-            top_k=3,
-            min_similarity=0.6
-        )
-
-        logger.info(f"✓ Found {len(results)} relevant techniques:")
-        for i, result in enumerate(results):
-            logger.info(f"  {i+1}. {result['metadata'].get('name')} ({result['metadata'].get('technique_id')})")
-            logger.info(f"     Similarity: {result['similarity_score']:.3f}")
-
-        logger.info("✓ MITRE Ingestion: PASSED\n")
-    else:
-        logger.error(f"✗ MITRE Ingestion failed: {result['message']}")
-
-
-async def main():
-    """Run all tests"""
-    logger.info("\n" + "="*60)
-    logger.info("RAG SERVICE INTEGRATION TESTS")
-    logger.info("="*60 + "\n")
 
     try:
-        # Test 1: Embedding Engine
-        await test_embedding_engine()
+        assert await vector_store.add_documents(
+            collection_name=collection_name,
+            documents=documents,
+            metadatas=metadatas,
+            ids=["T1110", "T1021", "T1078"],
+        )
 
-        # Test 2: Vector Store
-        vector_store_ok = await test_vector_store()
+        results = await vector_store.query(
+            collection_name=collection_name,
+            query_text="SSH brute force attack",
+            top_k=2,
+            min_similarity=0.0,
+        )
+        assert results
+        assert results[0]["metadata"]["technique_id"] == "T1110"
 
-        # Test 3: MITRE Ingestion (optional)
-        if vector_store_ok:
-            await test_mitre_ingestion()
-
-        logger.info("="*60)
-        logger.info("ALL TESTS PASSED ✓")
-        logger.info("="*60)
-
-    except Exception as e:
-        logger.error(f"\n✗ TEST FAILED: {e}")
-        logger.exception(e)
+        stats = vector_store.get_collection_stats(collection_name)
+        assert stats["count"] == 3
+    finally:
+        vector_store.delete_collection(collection_name)
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+@pytest.mark.asyncio
+async def test_exact_metadata_lookup_cve(vector_store):
+    results = await vector_store.get_by_metadata(
+        collection_name="cve_database",
+        metadata_filter={"cve_id": "CVE-2016-3082"},
+        top_k=1,
+    )
+    assert len(results) == 1
+    assert results[0]["metadata"]["cve_id"] == "CVE-2016-3082"
+    assert results[0]["similarity_score"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_exact_metadata_lookup_mitre(vector_store):
+    results = await vector_store.get_by_metadata(
+        collection_name="mitre_attack",
+        metadata_filter={"technique_id": "T1110.001"},
+        top_k=1,
+    )
+    assert len(results) == 1
+    assert results[0]["metadata"]["technique_id"] == "T1110.001"
+    assert results[0]["similarity_score"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_api_exact_cve_and_semantic_dedup(client):
+    response = await client.post(
+        "/retrieve",
+        json={
+            "query": "CVE-2016-3082 Apache Struts remote code execution",
+            "collection": "cve_database",
+            "top_k": 3,
+            "min_similarity": 0.5,
+        },
+    )
+    assert_api_success(response)
+
+    payload = response.json()
+    assert payload["results"]
+    assert payload["results"][0]["metadata"]["cve_id"] == "CVE-2016-3082"
+    assert payload["results"][0]["similarity_score"] == 1.0
+
+    cve_ids = [
+        result["metadata"].get("cve_id")
+        for result in payload["results"]
+    ]
+    assert len(cve_ids) == len(set(cve_ids))
+
+
+@pytest.mark.asyncio
+async def test_api_exact_mitre_auto_detection(client):
+    response = await client.post(
+        "/retrieve",
+        json={
+            "query": "T1110.001",
+            "collection": "mitre_attack",
+            "top_k": 3,
+            "min_similarity": 0.95,
+        },
+    )
+    assert_api_success(response)
+
+    payload = response.json()
+    assert payload["results"]
+    assert payload["results"][0]["metadata"]["technique_id"] == "T1110.001"
+    assert payload["results"][0]["similarity_score"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_api_runbook_semantic_retrieval(client):
+    response = await client.post(
+        "/retrieve",
+        json={
+            "query": "SSH brute force incident response block source IP",
+            "collection": "security_runbooks",
+            "top_k": 3,
+            "min_similarity": 0.5,
+        },
+    )
+    assert_api_success(response)
+
+    payload = response.json()
+    assert len(payload["results"]) >= 2
+    sections = [r["metadata"].get("section") for r in payload["results"]]
+    assert "Detection" in sections
+    assert "Containment" in sections
+
+
+@pytest.mark.asyncio
+async def test_api_invalid_collection_returns_400(client):
+    response = await client.post(
+        "/retrieve",
+        json={
+            "query": "test",
+            "collection": "invalid_collection",
+            "top_k": 3,
+            "min_similarity": 0.5,
+        },
+    )
+    assert response.status_code == 400
+    assert "Unsupported collection" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_api_health_reports_knowledge_base_readiness(client):
+    response = await client.get("/health")
+    assert_api_success(response)
+
+    payload = response.json()
+    assert payload["status"] == "healthy"
+    assert payload["chromadb_connected"] is True
+    assert payload["knowledge_base_ready"] is True
+
+    counts = payload["knowledge_base"]
+    assert counts["mitre_attack"] > 0
+    assert counts["cve_database"] > 0
+    assert counts["security_runbooks"] > 0
