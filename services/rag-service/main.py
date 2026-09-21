@@ -106,12 +106,32 @@ class RetrievalResponse(BaseModel):
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """Health check endpoint with knowledge-base readiness."""
+    chromadb_connected = vector_store.is_connected() if vector_store else False
+
+    required_collections = [
+        "mitre_attack",
+        "cve_database",
+        "security_runbooks",
+    ]
+    collection_counts = {}
+    knowledge_base_ready = chromadb_connected
+
+    if chromadb_connected:
+        for collection in required_collections:
+            stats = vector_store.get_collection_stats(collection)
+            count = stats.get("count", 0)
+            collection_counts[collection] = count
+            if count <= 0:
+                knowledge_base_ready = False
+
     return {
         "status": "healthy",
         "service": "rag-service",
         "version": "1.0.0",
-        "chromadb_connected": vector_store.is_connected() if vector_store else False
+        "chromadb_connected": chromadb_connected,
+        "knowledge_base_ready": knowledge_base_ready,
+        "knowledge_base": collection_counts,
     }
 
 
