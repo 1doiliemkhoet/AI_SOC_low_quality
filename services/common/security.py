@@ -181,9 +181,9 @@ def detect_prompt_injection(text: str) -> tuple[bool, Optional[str]]:
         (r'system\s*:', 'instruction_injection'),
         (r'\\n\\nHuman:', 'instruction_injection'),
 
-        (r'ignore\\s+(?:your|the)\\s+(?:training|safety|guidelines)', 'system_override'),
-        (r'ignore\\s+the\\s+[^\\n]{0,80}\\s+and\\s+(?:instead|rather)', 'instruction_injection'),
-        (r'act\\s+as\\s+(?:an?|the)\\s+(?:attacker|unrestricted|unfiltered)', 'role_switch'),
+        (r'ignore\s+(?:your|the)\s+(?:training|safety|guidelines)', 'system_override'),
+        (r'ignore\s+the\s+[^\n]{0,80}\s+and\s+(?:instead|rather)', 'instruction_injection'),
+        (r'act\s+as\s+(?:an?|the)\s+(?:attacker|unrestricted|unfiltered)', 'role_switch'),
 
         # Output manipulation
         (r'output\s+your\s+(prompt|instructions)', 'output_manipulation'),
