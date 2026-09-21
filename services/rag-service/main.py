@@ -10,6 +10,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+import re
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -83,6 +84,10 @@ class RetrievalRequest(BaseModel):
         None,
         description="Optional exact MITRE ATT&CK technique IDs to prioritize"
     )
+    cve_ids: Optional[List[str]] = Field(
+        None,
+        description="Optional exact CVE IDs to prioritize"
+    )
 
 
 class RetrievalResult(BaseModel):
@@ -154,6 +159,32 @@ async def retrieve_context(request: RetrievalRequest):
                 for result in exact_matches:
                     result_key = (
                         (result.get("metadata") or {}).get("technique_id")
+                        or result.get("document")
+                    )
+                    if result_key not in seen_keys:
+                        results.append(result)
+                        seen_keys.add(result_key)
+
+        # For CVE searches, exact identifiers must not depend on embedding
+        # similarity. Accept explicit CVE IDs and also detect CVE IDs directly
+        # from the query text (e.g. "CVE-2016-3082").
+        cve_ids = list(request.cve_ids or [])
+        if request.collection == "cve_database":
+            cve_ids.extend(re.findall(r"\bCVE-\d{4}-\d{4,}\b", request.query, re.IGNORECASE))
+            cve_ids = list(dict.fromkeys(cve_ids))
+
+            for cve_id in cve_ids:
+                cve_id = cve_id.upper()
+                exact_matches = await vector_store.query(
+                    collection_name=request.collection,
+                    query_text=cve_id,
+                    top_k=1,
+                    min_similarity=0.0,
+                    metadata_filter={"cve_id": cve_id}
+                )
+                for result in exact_matches:
+                    result_key = (
+                        (result.get("metadata") or {}).get("cve_id")
                         or result.get("document")
                     )
                     if result_key not in seen_keys:
