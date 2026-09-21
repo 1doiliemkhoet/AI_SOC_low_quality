@@ -96,10 +96,10 @@ class VectorStore:
                 return True
             except:
                 # Collection doesn't exist, create it
-                self.client.create_collection(
-                    name=name,
-                    metadata=metadata or {}
-                )
+                create_args = {"name": name}
+                if metadata:
+                    create_args["metadata"] = metadata
+                self.client.create_collection(**create_args)
                 logger.info(f"Successfully created collection: {name}")
                 return True
 
