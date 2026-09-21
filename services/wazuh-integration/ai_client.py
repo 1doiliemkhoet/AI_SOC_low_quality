@@ -5,6 +5,7 @@ AI-Augmented SOC
 Handles communication with Alert Triage and RAG services.
 """
 
+import asyncio
 import httpx
 import structlog
 from typing import Dict, Any, Optional
@@ -274,35 +275,66 @@ class AIClient:
             query=query,
         )
 
-        try:
-            async with httpx.AsyncClient() as client:
+        async def retrieve_collection(
+            client: httpx.AsyncClient,
+            collection: str,
+            extra_payload: Optional[Dict[str, Any]] = None,
+        ) -> tuple[str, Optional[Dict[str, Any]]]:
+            payload = {
+                "query": query,
+                "collection": collection,
+                "top_k": 3,
+                "min_similarity": 0.5,
+            }
+            if extra_payload:
+                payload.update(extra_payload)
+
+            try:
                 response = await client.post(
                     rag_url,
-                    json={
-                        "query": query,
-                        "collection": "mitre_attack",
-                        "top_k": 3,
-                        "min_similarity": 0.5,
-                        "mitre_techniques": mitre_techniques or []
-                    },
-                    timeout=self.ai_timeout
+                    json=payload,
+                    timeout=self.ai_timeout,
                 )
-
                 response.raise_for_status()
-
-                rag_result = response.json()
-
-                logger.info(
-                    "rag_enrichment_complete",
+                return collection, response.json()
+            except httpx.HTTPError as e:
+                logger.warning(
+                    "rag_collection_failed",
+                    error=str(e),
                     alert_id=alert_id,
-                    sources_found=len(
-                        rag_result.get("results", [])
-                    )
+                    collection=collection,
+                )
+                return collection, None
+
+        try:
+            async with httpx.AsyncClient() as client:
+                responses = await asyncio.gather(
+                    retrieve_collection(
+                        client,
+                        "mitre_attack",
+                        {"mitre_techniques": mitre_techniques or []},
+                    ),
+                    retrieve_collection(client, "cve_database"),
+                    retrieve_collection(client, "security_runbooks"),
                 )
 
-                return rag_result
+            rag_results = dict(responses)
+            total_sources = sum(
+                len(result.get("results", []))
+                for result in rag_results.values()
+                if result
+            )
 
-        except httpx.HTTPError as e:
+            logger.info(
+                "rag_enrichment_complete",
+                alert_id=alert_id,
+                sources_found=total_sources,
+                collections=[name for name, result in rag_results.items() if result],
+            )
+
+            return rag_results if total_sources > 0 else None
+
+        except Exception as e:
             logger.warning(
                 "rag_enrichment_failed",
                 error=str(e),
