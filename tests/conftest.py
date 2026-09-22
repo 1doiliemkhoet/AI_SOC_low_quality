@@ -126,23 +126,6 @@ def isolate_service_modules(request):
     try:
         yield
     finally:
-        for module_name, module in list(sys.modules.items()):
-            module_file = getattr(module, "__file__", None)
-            if not module_file:
-                continue
-
-            try:
-                module_path = Path(module_file).resolve()
-            except OSError:
-                continue
-
-            if target_resolved not in module_path.parents:
-                continue
-
-            # Keep target-service imports intact during the test; only restore
-            # the previous path/module state after the test completes.
-            pass
-
         sys.path[:] = original_sys_path
 
         # Restore modules belonging to other services that were temporarily
