@@ -96,7 +96,7 @@ The rule must be in valid Sigma YAML format. Include:
 - status: experimental
 - description: What the rule detects
 - logsource: category, product, service
-- detection: one or more named selections; each selection MUST be a YAML mapping of log field names to values (for example 'selection: {user: kali, event_type: login}'). Do NOT use expressions such as 'field == value' and do NOT make selection a list of strings.
+- detection: one or more named selections; each selection MUST be a YAML mapping of log field names to values (for example 'selection: {{user: kali, event_type: login}}'). Do NOT use expressions such as 'field == value' and do NOT make selection a list of strings.
 - condition: MUST reference one or more named detection selections (for example 'condition: selection' or 'condition: selection and filter'); never use values such as 'any' by themselves.
 - falsepositives: Known false positive scenarios
 - level: {severity}
