@@ -10,6 +10,7 @@ calculates false positive rates, and queues rules for analyst approval.
 """
 
 import logging
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -17,9 +18,11 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 
 import httpx
+import yaml
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 from prometheus_client import Counter, generate_latest
+from sigma.rule import SigmaRule
 from starlette.responses import Response
 
 logging.basicConfig(
@@ -93,11 +96,11 @@ The rule must be in valid Sigma YAML format. Include:
 - status: experimental
 - description: What the rule detects
 - logsource: category, product, service
-- detection: selection criteria with field names and values
-- condition: How selections combine
+- detection: one or more named selections; each selection MUST be a YAML mapping of log field names to values (for example 'selection: {user: kali, event_type: login}'). Do NOT use expressions such as 'field == value' and do NOT make selection a list of strings.
+- condition: MUST reference one or more named detection selections (for example 'condition: selection' or 'condition: selection and filter'); never use values such as 'any' by themselves.
 - falsepositives: Known false positive scenarios
 - level: {severity}
-- tags: MITRE ATT&CK technique IDs
+- tags: MITRE ATT&CK tags using the 'attack.<technique_id>' namespace, for example 'attack.t1078'
 
 Attack Pattern:
 {description}
@@ -111,8 +114,85 @@ MITRE Techniques: {mitre}
 Generate ONLY the Sigma YAML rule. No explanation, no markdown fencing. Just the raw YAML."""
 
 
+def _clean_rule_text(rule_text: str) -> str:
+    """Remove optional Markdown code fences around an LLM-generated rule."""
+    rule_text = (rule_text or "").strip()
+    if rule_text.startswith("```"):
+        lines = rule_text.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        rule_text = "\n".join(lines).strip()
+    return rule_text
+
+
+def _validate_sigma_rule(rule_text: str) -> tuple[bool, str]:
+    """Validate YAML and Sigma detection semantics before storing a rule."""
+    try:
+        document = yaml.safe_load(rule_text)
+        if not isinstance(document, dict):
+            return False, "Sigma rule must be a YAML mapping"
+
+        detection = document.get("detection")
+        if not isinstance(detection, dict):
+            return False, "Sigma rule must contain a detection mapping"
+
+        selections = {name: value for name, value in detection.items() if name != "condition"}
+        if not selections:
+            return False, "Sigma detection must contain at least one named selection"
+
+        condition = detection.get("condition")
+        if not isinstance(condition, str) or not condition.strip():
+            return False, "Sigma detection must contain a condition"
+
+        if not any(re.search(r"(?<![\\w-])" + re.escape(name) + r"(?![\\w-])", condition) for name in selections):
+            return False, "Sigma condition must reference a named detection selection"
+
+        for name, selection in selections.items():
+            if isinstance(selection, list):
+                if not selection or any(not isinstance(item, dict) for item in selection):
+                    return False, f"Sigma selection '{name}' must contain field/value mappings, not expression strings"
+            elif not isinstance(selection, dict):
+                return False, f"Sigma selection '{name}' must be a field/value mapping"
+
+        tags = document.get("tags", [])
+        if not isinstance(tags, list):
+            return False, "Sigma tags must be a list"
+        for tag in tags:
+            if not isinstance(tag, str) or "." not in tag:
+                return False, f"Sigma tag '{tag}' must use a namespace such as attack.t1078"
+
+        SigmaRule.from_yaml(rule_text)
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
+
+
+async def _ollama_generate(prompt: str) -> Optional[str]:
+    """Generate one Sigma rule candidate through Ollama."""
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{OLLAMA_HOST}/api/generate",
+                json={
+                    "model": OLLAMA_MODEL,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0.3, "num_predict": 1024},
+                },
+            )
+            if response.status_code != 200:
+                logger.error(f"Ollama returned {response.status_code}")
+                return None
+            return _clean_rule_text(response.json().get("response", ""))
+    except Exception as e:
+        logger.error(f"LLM rule generation failed: {e}")
+        return None
+
+
 async def generate_sigma_rule(request: RuleGenerationRequest) -> Optional[str]:
-    """Use the LLM to generate a Sigma detection rule."""
+    """Generate and validate a Sigma detection rule through the LLM."""
     raw_log_section = f"Raw Log Sample:\n{request.raw_log}" if request.raw_log else ""
     network_section = ""
     if request.source_ip or request.dest_ip:
@@ -133,31 +213,38 @@ async def generate_sigma_rule(request: RuleGenerationRequest) -> Optional[str]:
         mitre=", ".join(request.mitre_techniques) if request.mitre_techniques else "Unknown",
     )
 
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                f"{OLLAMA_HOST}/api/generate",
-                json={
-                    "model": OLLAMA_MODEL,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"temperature": 0.3, "num_predict": 1024},
-                },
-            )
-            if response.status_code == 200:
-                result = response.json()
-                rule_text = result.get("response", "").strip()
-                # Clean up markdown fencing if present
-                if rule_text.startswith("```"):
-                    lines = rule_text.split("\n")
-                    rule_text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-                return rule_text
-            else:
-                logger.error(f"Ollama returned {response.status_code}")
-                return None
-    except Exception as e:
-        logger.error(f"LLM rule generation failed: {e}")
-        return None
+    rule_text = await _ollama_generate(prompt)
+    if rule_text:
+        valid, error = _validate_sigma_rule(rule_text)
+        if valid:
+            return rule_text
+
+        logger.warning(f"Generated Sigma rule failed validation: {error}")
+        repair_prompt = "\n".join([
+            "Repair the following invalid Sigma rule.",
+            "",
+            "Validation error:",
+            error,
+            "",
+            "Requirements:",
+            "- Return ONLY valid Sigma YAML.",
+            "- Every detection selection MUST be a mapping of log field names to values.",
+            "- The condition MUST reference a named selection such as selection.",
+            "- Every tag MUST use a namespace such as attack.t1078.",
+            "- Do not use field == value expressions.",
+            "- Do not return Markdown fences.",
+            "",
+            "Invalid rule:",
+            rule_text,
+        ])
+        repaired = await _ollama_generate(repair_prompt)
+        if repaired:
+            valid, error = _validate_sigma_rule(repaired)
+            if valid:
+                return repaired
+            logger.error(f"Repaired Sigma rule failed validation: {error}")
+
+    return None
 
 
 async def backtest_rule(rule_text: str) -> Dict[str, Any]:
