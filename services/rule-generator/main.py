@@ -125,6 +125,27 @@ def _clean_rule_text(rule_text: str) -> str:
     return rule_text
 
 
+def _ensure_sigma_condition(rule_text: str) -> str:
+    """Add an unambiguous condition when a rule has exactly one selection."""
+    try:
+        document = yaml.safe_load(rule_text)
+        if not isinstance(document, dict):
+            return rule_text
+
+        detection = document.get("detection")
+        if not isinstance(detection, dict):
+            return rule_text
+
+        selection_names = [name for name in detection if name != "condition"]
+        if len(selection_names) == 1 and "condition" not in detection:
+            detection["condition"] = selection_names[0]
+            return yaml.safe_dump(document, sort_keys=False)
+    except Exception:
+        pass
+
+    return rule_text
+
+
 def _validate_sigma_rule(rule_text: str) -> tuple[bool, str]:
     """Validate YAML and Sigma detection semantics before storing a rule."""
     try:
@@ -229,6 +250,7 @@ async def generate_sigma_rule(request: RuleGenerationRequest) -> Optional[str]:
 
     rule_text = await _ollama_generate(prompt)
     if rule_text:
+        rule_text = _ensure_sigma_condition(rule_text)
         valid, error = _validate_sigma_rule(rule_text)
         if valid:
             return rule_text
@@ -253,6 +275,7 @@ async def generate_sigma_rule(request: RuleGenerationRequest) -> Optional[str]:
         ])
         repaired = await _ollama_generate(repair_prompt)
         if repaired:
+            repaired = _ensure_sigma_condition(repaired)
             valid, error = _validate_sigma_rule(repaired)
             if valid:
                 return repaired
