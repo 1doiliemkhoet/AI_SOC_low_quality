@@ -170,3 +170,25 @@ tags:
     assert valid, error
     assert "hour:" not in normalized
     assert "falsepositives:" in normalized
+
+
+def test_is_false_positive_alert_requires_explicit_true_feedback():
+    from main import _is_false_positive_alert
+
+    assert _is_false_positive_alert({
+        "feedback_count": 1,
+        "feedback": [{
+            "is_false_positive": False,
+            "true_label": "intrusion_attempt",
+        }],
+    }) is False
+
+    assert _is_false_positive_alert({
+        "feedback_count": 1,
+        "feedback": [{
+            "is_false_positive": True,
+            "true_label": "BENIGN",
+        }],
+    }) is True
+
+    assert _is_false_positive_alert({"feedback_count": 1, "feedback": []}) is False
