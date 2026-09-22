@@ -55,6 +55,22 @@ from metrics import (
 logger = logging.getLogger(__name__)
 
 
+_TERMINAL_ACTION_STATUSES = frozenset({
+    ActionStatus.COMPLETED,
+    ActionStatus.FAILED,
+    ActionStatus.SKIPPED,
+    ActionStatus.VETOED,
+    ActionStatus.ROLLED_BACK,
+})
+
+
+def _all_actions_resolved(actions: List[PlannedAction]) -> bool:
+    """Return True when every planned action has reached a terminal state."""
+    return bool(actions) and all(
+        action.status in _TERMINAL_ACTION_STATUSES for action in actions
+    )
+
+
 class ResponseOrchestrator:
     """
     Drives the full autonomous defense loop.
@@ -511,9 +527,11 @@ class ResponseOrchestrator:
         ]
         if pending_approval:
             plan.status = PlanStatus.AWAITING_APPROVAL
-        elif all(a.status in (ActionStatus.COMPLETED, ActionStatus.SKIPPED) for a in plan.actions):
+        elif _all_actions_resolved(plan.actions):
+            # Failed/vetoed actions must not leave the plan stuck in EXECUTING.
+            # Verification decides whether the remaining successful actions were
+            # sufficient; a failed verification can then trigger rollback.
             plan.status = PlanStatus.VERIFYING
-            # Start async verification
             asyncio.create_task(self._verify_and_complete(plan))
         else:
             plan.status = PlanStatus.EXECUTING
@@ -767,11 +785,7 @@ class ResponseOrchestrator:
     ) -> bool:
         """Update counters and transition to verification atomically."""
         terminal_statuses = {
-            ActionStatus.COMPLETED.value,
-            ActionStatus.FAILED.value,
-            ActionStatus.SKIPPED.value,
-            ActionStatus.VETOED.value,
-            ActionStatus.ROLLED_BACK.value,
+            status.value for status in _TERMINAL_ACTION_STATUSES
         }
 
         try:
@@ -827,17 +841,7 @@ class ResponseOrchestrator:
             if human_approved:
                 plan.human_approved_count += 1
 
-            all_resolved = bool(plan.actions) and all(
-                action.status
-                in (
-                    ActionStatus.COMPLETED,
-                    ActionStatus.FAILED,
-                    ActionStatus.SKIPPED,
-                    ActionStatus.VETOED,
-                    ActionStatus.ROLLED_BACK,
-                )
-                for action in plan.actions
-            )
+            all_resolved = _all_actions_resolved(plan.actions)
             should_verify = (
                 all_resolved
                 and plan.status
