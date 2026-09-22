@@ -83,6 +83,10 @@ class ResponseOrchestrator:
             wazuh_username=settings.wazuh_api_username,
             wazuh_password=settings.wazuh_api_password,
             wazuh_verify_ssl=settings.wazuh_api_verify_ssl,
+            wazuh_indexer_url=settings.wazuh_indexer_url,
+            wazuh_indexer_username=settings.wazuh_indexer_username,
+            wazuh_indexer_password=settings.wazuh_indexer_password,
+            wazuh_indexer_verify_ssl=settings.wazuh_indexer_verify_ssl,
             risk_reduction_threshold=settings.verification_risk_reduction_threshold,
             monitoring_duration_seconds=settings.verification_monitoring_duration_seconds,
         )
