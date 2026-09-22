@@ -149,7 +149,7 @@ def _ensure_sigma_condition(rule_text: str) -> str:
 def _strip_unsupported_temporal_lines(rule_text: str, raw_evidence: str) -> str:
     """Remove invented temporal fields before YAML parsing when evidence lacks them."""
     temporal_fields = {
-        "hour", "hours", "day", "days", "weekday", "timestamp",
+        "hour", "hours", "day", "days", "weekday", "dayofweek", "timestamp",
         "time", "event_time",
     }
     lines = []
@@ -207,9 +207,16 @@ def _normalize_generated_sigma(rule_text: str, request: RuleGenerationRequest) -
             "hour", "hours", "day", "days", "weekday", "timestamp",
             "time", "event_time",
         }
-        for name, selection in detection.items():
+        for name, selection in list(detection.items()):
             if name == "condition":
                 continue
+            if isinstance(selection, list) and selection and all(
+                isinstance(item, dict) and len(item) == 1 for item in selection
+            ):
+                field_names = [key for item in selection for key in item]
+                if len(set(field_names)) == len(field_names):
+                    selection = {key: value for item in selection for key, value in item.items()}
+                    detection[name] = selection
             if isinstance(selection, dict):
                 for field in list(selection):
                     if field.lower() in unsupported_temporal_fields:
