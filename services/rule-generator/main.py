@@ -365,6 +365,18 @@ async def generate_sigma_rule(request: RuleGenerationRequest) -> Optional[str]:
     return None
 
 
+def _is_false_positive_alert(alert: Dict[str, Any]) -> bool:
+    """Return true only when analyst feedback explicitly marks an alert as FP."""
+    feedback_items = alert.get("feedback") or []
+    if not isinstance(feedback_items, list):
+        return False
+
+    return any(
+        isinstance(item, dict) and item.get("is_false_positive") is True
+        for item in feedback_items
+    )
+
+
 async def backtest_rule(rule_text: str) -> Dict[str, Any]:
     """
     Back-test a generated rule against historical alert data.
@@ -398,8 +410,9 @@ async def backtest_rule(rule_text: str) -> Dict[str, Any]:
                         for keyword in _extract_rule_keywords(rule_lower)
                     ):
                         matches += 1
-                        # If the alert was marked as false positive, count it
-                        if alert.get("feedback_count", 0) > 0:
+                        # Count only explicit analyst false-positive feedback.
+                        # The presence of feedback alone does not imply FP.
+                        if _is_false_positive_alert(alert):
                             false_positives += 1
 
     except Exception as e:
