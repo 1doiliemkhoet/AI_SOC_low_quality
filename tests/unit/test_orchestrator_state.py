@@ -162,3 +162,51 @@ async def test_rollback_failure_is_persisted_without_marking_action_rolled_back(
     assert action.status == ActionStatus.COMPLETED
     assert action.error_message == "Rollback failed: force delete unsupported"
     persist.assert_awaited_once_with(action)
+
+
+
+@pytest.mark.asyncio
+async def test_persist_plan_reraises_production_database_errors():
+    from config import Settings
+    from models import DefensePlan
+    from orchestrator import ResponseOrchestrator
+
+    orch = ResponseOrchestrator(Settings())
+    plan = DefensePlan(
+        plan_id="PLAN-PERSIST-FAIL",
+        incident_id="INC-PERSIST-FAIL",
+    )
+
+    class FailingDbSession:
+        async def __aenter__(self):
+            raise RuntimeError("database connection lost")
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    with patch("orchestrator.db_session", return_value=FailingDbSession()):
+        with pytest.raises(RuntimeError, match="database connection lost"):
+            await orch._persist_plan(plan)
+
+
+@pytest.mark.asyncio
+async def test_persist_plan_keeps_uninitialized_pool_test_fallback():
+    from config import Settings
+    from models import DefensePlan
+    from orchestrator import ResponseOrchestrator
+
+    orch = ResponseOrchestrator(Settings())
+    plan = DefensePlan(
+        plan_id="PLAN-PERSIST-NO-POOL",
+        incident_id="INC-PERSIST-NO-POOL",
+    )
+
+    class UninitializedDbSession:
+        async def __aenter__(self):
+            raise RuntimeError("Database pool has not been initialised")
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    with patch("orchestrator.db_session", return_value=UninitializedDbSession()):
+        await orch._persist_plan(plan)
