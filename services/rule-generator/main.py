@@ -97,7 +97,7 @@ The rule must be in valid Sigma YAML format. Include:
 - description: What the rule detects
 - logsource: category, product, service
 - detection: one or more named selections; each selection MUST be a YAML mapping of log field names to values (for example 'selection: {{user: kali, event_type: login}}'). Do NOT use expressions such as 'field == value' and do NOT make selection a list of strings.
-- condition: MUST reference one or more named detection selections (for example 'condition: selection' or 'condition: selection and filter'); never use values such as 'any' by themselves.
+- condition: MUST reference only named detection selections that actually exist (for example 'condition: selection' or 'condition: selection and filter' when a filter selection is also defined); never use values such as 'any' by themselves.
 - falsepositives: Known false positive scenarios
 - level: {severity}
 - tags: MITRE ATT&CK tags using the 'attack.<technique_id>' namespace, for example 'attack.t1078'
@@ -146,8 +146,24 @@ def _validate_sigma_rule(rule_text: str) -> tuple[bool, str]:
         if not isinstance(condition, str) or not condition.strip():
             return False, "Sigma detection must contain a condition"
 
-        if not any(re.search(r"(?<![\\w-])" + re.escape(name) + r"(?![\\w-])", condition) for name in selections):
+        # Every non-operator identifier in the condition must resolve to a
+        # detection selection. Support Sigma patterns such as "selection_*",
+        # "1 of selection_*", and "all of them".
+        condition_tokens = re.findall(r"(?<![\\w-])([A-Za-z_][\\w-]*\\*?)(?![\\w-])", condition)
+        operators = {"and", "or", "not", "all", "any", "of", "them"}
+        references = [token for token in condition_tokens if token.lower() not in operators]
+
+        if not references:
             return False, "Sigma condition must reference a named detection selection"
+
+        for reference in references:
+            if reference.endswith("*"):
+                prefix = reference[:-1]
+                resolved = any(name.startswith(prefix) for name in selections)
+            else:
+                resolved = reference in selections
+            if not resolved:
+                return False, f"Sigma condition references undefined detection selection '{reference}'"
 
         for name, selection in selections.items():
             if isinstance(selection, list):
