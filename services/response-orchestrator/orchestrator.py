@@ -1034,14 +1034,19 @@ class ResponseOrchestrator:
                 logger.info(
                     f"[DRY RUN] Rolled back: {action.action_type.value} on {action.target}"
                 )
+                await self._persist_action(action)
                 continue
 
             adapter = self._adapters.get(action.adapter.value)
             if not adapter:
                 rollback_ok = False
+                action.error_message = (
+                    f"No adapter for rollback: {action.adapter.value}"
+                )
                 logger.error(
                     f"Rollback failed for {action.action_id}: no adapter for {action.adapter.value}"
                 )
+                await self._persist_action(action)
                 continue
 
             try:
@@ -1056,12 +1061,18 @@ class ResponseOrchestrator:
                     )
                 else:
                     rollback_ok = False
+                    action.error_message = (
+                        f"Rollback failed: {result.error or 'adapter returned failure'}"
+                    )
                     logger.error(
                         f"Rollback failed for {action.action_id}: {result.error}"
                     )
+                await self._persist_action(action)
             except Exception as e:
                 rollback_ok = False
+                action.error_message = f"Rollback error: {e}"
                 logger.error(f"Rollback error for {action.action_id}: {e}")
+                await self._persist_action(action)
 
         return rollback_ok
 
