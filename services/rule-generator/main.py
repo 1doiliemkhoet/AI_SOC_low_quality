@@ -149,7 +149,7 @@ def _ensure_sigma_condition(rule_text: str) -> str:
 def _strip_unsupported_temporal_lines(rule_text: str, raw_evidence: str) -> str:
     """Remove invented temporal fields before YAML parsing when evidence lacks them."""
     temporal_fields = {
-        "hour", "hours", "day", "days", "weekday", "dayofweek", "timestamp",
+        "hour", "hours", "day", "days", "weekday", "dayofweek", "day_of_week", "timestamp",
         "time", "event_time",
     }
     lines = []
