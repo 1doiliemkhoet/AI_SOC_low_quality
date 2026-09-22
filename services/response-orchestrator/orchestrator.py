@@ -530,6 +530,20 @@ class ResponseOrchestrator:
         await self._persist_plan(plan)
         self._plans[plan.plan_id] = plan
 
+        # No executable countermeasure means there is nothing to verify.
+        # Mark the plan terminally failed instead of leaving it in EXECUTING or
+        # VERIFYING with zero actions.
+        if not plan.actions:
+            plan.status = PlanStatus.FAILED
+            plan.completed_at = datetime.utcnow()
+            plan.updated_at = datetime.utcnow()
+            logger.error(
+                f"Plan {plan.plan_id} FAILED: no executable defense actions "
+                f"were generated for incident {incident_id}"
+            )
+            await self._persist_plan(plan)
+            return plan
+
         # Step 4: Execute auto-approved actions
         if auto_execute and not plan.dry_run:
             await self._execute_auto_actions(plan)
