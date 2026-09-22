@@ -128,6 +128,8 @@ def _clean_rule_text(rule_text: str) -> str:
 def _ensure_sigma_condition(rule_text: str) -> str:
     """Add an unambiguous condition when a rule has exactly one selection."""
     try:
+        raw_evidence = (request.raw_log or "").lower()
+        rule_text = _strip_unsupported_temporal_lines(rule_text, raw_evidence)
         document = yaml.safe_load(rule_text)
         if not isinstance(document, dict):
             return rule_text
@@ -146,6 +148,24 @@ def _ensure_sigma_condition(rule_text: str) -> str:
     return rule_text
 
 
+def _strip_unsupported_temporal_lines(rule_text: str, raw_evidence: str) -> str:
+    """Remove invented temporal fields before YAML parsing when evidence lacks them."""
+    temporal_fields = {
+        "hour", "hours", "day", "days", "weekday", "timestamp",
+        "time", "event_time",
+    }
+    lines = []
+    for line in rule_text.splitlines():
+        match = re.match(r"^(?P<indent>\\s*)(?:-\\s*)?(?P<field>[A-Za-z_][A-Za-z0-9_-]*)\\s*:", line)
+        if match and match.group("field").lower() in temporal_fields:
+            field = match.group("field")
+            field_pattern = rf'(?i)(?:"{re.escape(field)}"\\s*[:=]|\\b{re.escape(field)}\\b\\s*[:=])'
+            if re.search(field_pattern, raw_evidence) is None:
+                continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _normalize_generated_sigma(rule_text: str, request: RuleGenerationRequest) -> str:
     """Normalize model output so stored Sigma stays aligned with supplied evidence."""
     try:
@@ -157,6 +177,12 @@ def _normalize_generated_sigma(rule_text: str, request: RuleGenerationRequest) -
         # rule focused on standard Sigma fields.
         document.pop("evidence", None)
         document.pop("condition", None)
+
+        falsepositives = document.get("falsepositives")
+        if isinstance(falsepositives, str):
+            document["falsepositives"] = [falsepositives]
+        elif falsepositives is None:
+            document["falsepositives"] = []
 
         # MITRE tags must come only from the request, using canonical lowercase
         # ATT&CK tag names.
@@ -175,7 +201,6 @@ def _normalize_generated_sigma(rule_text: str, request: RuleGenerationRequest) -
         # If temporal fields are not present in the supplied raw log, remove
         # hallucinated hour/day/time predicates rather than storing a rule
         # that claims evidence we do not have.
-        raw_evidence = (request.raw_log or "").lower()
         unsupported_temporal_fields = {
             "hour", "hours", "day", "days", "weekday", "timestamp",
             "time", "event_time",
