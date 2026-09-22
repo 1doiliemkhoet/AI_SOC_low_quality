@@ -95,23 +95,61 @@ def isolate_service_modules(request):
     original_sys_path = list(sys.path)
     saved_modules = {}
 
+    target_dir = _SERVICE_DIRS[target_service]
+    target_resolved = target_dir.resolve()
+
+    # Keep modules that already belong to the target service. They may have
+    # been imported by the test module during collection and must remain the
+    # same class objects throughout that test file (for example TriageResponse).
     for module_name, module in list(sys.modules.items()):
-        if _module_in_service_dir(module, _SERVICE_DIRS):
+        module_file = getattr(module, "__file__", None)
+        if not module_file:
+            continue
+
+        try:
+            module_path = Path(module_file).resolve()
+        except OSError:
+            continue
+
+        belongs_to_service = any(
+            service_dir.resolve() in module_path.parents
+            for service_dir in _SERVICE_DIRS.values()
+        )
+
+        if belongs_to_service and target_resolved not in module_path.parents:
             saved_modules[module_name] = module
             sys.modules.pop(module_name, None)
 
-    target_path = str(_SERVICE_DIRS[target_service].resolve())
+    target_path = str(target_resolved)
     sys.path[:] = [target_path] + [entry for entry in sys.path if entry != target_path]
 
     try:
         yield
     finally:
         for module_name, module in list(sys.modules.items()):
-            if _module_in_service_dir(module, _SERVICE_DIRS):
-                sys.modules.pop(module_name, None)
+            module_file = getattr(module, "__file__", None)
+            if not module_file:
+                continue
+
+            try:
+                module_path = Path(module_file).resolve()
+            except OSError:
+                continue
+
+            if target_resolved not in module_path.parents:
+                continue
+
+            # Keep target-service imports intact during the test; only restore
+            # the previous path/module state after the test completes.
+            pass
 
         sys.path[:] = original_sys_path
-        sys.modules.update(saved_modules)
+
+        # Restore modules belonging to other services that were temporarily
+        # removed before this test.
+        for module_name, module in saved_modules.items():
+            if module_name not in sys.modules:
+                sys.modules[module_name] = module
 
 
 # ============================================================================
