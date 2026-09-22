@@ -100,3 +100,37 @@ tags:
     valid, error = _validate_sigma_rule(normalized)
     assert valid, error
     assert "condition: selection" in normalized
+
+
+def test_normalize_generated_sigma_removes_unsupported_temporal_evidence_and_tags():
+    from main import RuleGenerationRequest, _normalize_generated_sigma
+
+    request = RuleGenerationRequest(
+        alert_id="test-alert",
+        alert_description="Successful login during non-business hours.",
+        raw_log="Successful login from 192.168.100.140 using user kali during non-business hours",
+        source_ip="192.168.100.140",
+        mitre_techniques=["T1078"],
+        severity="high",
+    )
+    rule = """---
+title: Test Rule
+status: experimental
+logsource:
+  category: authentication
+detection:
+  selection:
+    user: kali
+    hours: 20-23
+  condition: selection
+evidence: invented
+level: high
+tags:
+  - attack.T1078
+  - attack.T1210
+"""
+    normalized = _normalize_generated_sigma(rule, request)
+    assert "hours:" not in normalized
+    assert "evidence:" not in normalized
+    assert "attack.t1078" in normalized
+    assert "attack.T1210" not in normalized
