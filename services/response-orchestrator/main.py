@@ -138,7 +138,9 @@ async def health_check():
     ollama_ok = False
     wazuh_ok = False
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(
+        verify=settings.wazuh_api_verify_ssl
+    ) as client:
         try:
             r = await client.get(
                 f"{settings.correlation_engine_url}/health", timeout=5.0
