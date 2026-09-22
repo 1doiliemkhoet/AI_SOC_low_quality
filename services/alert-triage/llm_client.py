@@ -121,6 +121,7 @@ class OllamaClient:
 
         self.base_url = settings.ollama_host
         self.primary_model = settings.primary_model
+        self.fallback_model = settings.fallback_model
         self.timeout = settings.llm_timeout
 
         # Ollama is a single-slot CPU-bound resource on the current host.
@@ -1388,7 +1389,6 @@ Begin analysis now.
         # -------------------------------------------------
         # STEP 1: ML PREDICTION
         # -------------------------------------------------
-
         ml_prediction = None
 
         if settings.ml_enabled:
@@ -1415,7 +1415,6 @@ Begin analysis now.
         # -------------------------------------------------
         # STEP 2: CONTEXT
         # -------------------------------------------------
-
         context_block = (
             await self.context_manager.build_context(
                 alert
@@ -1425,7 +1424,6 @@ Begin analysis now.
         # -------------------------------------------------
         # STEP 3: BUILD PROMPT
         # -------------------------------------------------
-
         base_prompt = (
             self._build_triage_prompt(
                 alert,
@@ -1436,7 +1434,6 @@ Begin analysis now.
         # -------------------------------------------------
         # STEP 4: ML ENRICHMENT
         # -------------------------------------------------
-
         enriched_prompt = (
             enrich_llm_prompt_with_ml(
                 base_prompt,
@@ -1445,69 +1442,80 @@ Begin analysis now.
         )
 
         # -------------------------------------------------
-        # STEP 5: PRIMARY MODEL
+        # STEP 5: PRIMARY + FALLBACK MODELS
         # -------------------------------------------------
+        models_to_try = [self.primary_model]
 
-        logger.info(
-            f"Analyzing alert "
-            f"{alert.alert_id} "
-            f"with {self.primary_model}"
-        )
+        if (
+            self.fallback_model
+            and self.fallback_model != self.primary_model
+        ):
+            models_to_try.append(self.fallback_model)
 
-        llm_output = await self._call_ollama(
-            enriched_prompt,
-            self.primary_model,
-            settings.llm_temperature,
-        )
+        for index, model in enumerate(models_to_try):
 
-        if llm_output:
+            role = "primary" if index == 0 else "fallback"
+
+            logger.info(
+                f"Analyzing alert "
+                f"{alert.alert_id} "
+                f"with {role} model {model}"
+            )
+
+            llm_output = await self._call_ollama(
+                enriched_prompt,
+                model,
+                settings.llm_temperature,
+            )
+
+            if not llm_output:
+
+                logger.warning(
+                    f"{role.capitalize()} model {model} "
+                    f"failed for alert {alert.alert_id}"
+                )
+                continue
 
             response = self._parse_llm_response(
                 alert,
                 llm_output,
-                self.primary_model,
+                model,
             )
 
-            if response:
+            if not response:
 
-                if ml_prediction:
+                logger.warning(
+                    f"{role.capitalize()} model {model} "
+                    f"returned an invalid triage response "
+                    f"for alert {alert.alert_id}"
+                )
+                continue
 
-                    response.ml_prediction = (
-                        ml_prediction.prediction
-                    )
+            if ml_prediction:
 
-                    response.ml_confidence = (
-                        ml_prediction.confidence
-                    )
-
-                logger.info(
-                    f"Alert {alert.alert_id} "
-                    f"analyzed successfully"
+                response.ml_prediction = (
+                    ml_prediction.prediction
                 )
 
-                return response
+                response.ml_confidence = (
+                    ml_prediction.confidence
+                )
+
+            logger.info(
+                f"Alert {alert.alert_id} "
+                f"analyzed successfully with {role} "
+                f"model {model}"
+            )
+
+            return response
 
         # -------------------------------------------------
-        # STEP 6: NO FALLBACK
+        # ALL CONFIGURED MODELS FAILED
         # -------------------------------------------------
-
-        # The current host has one Ollama slot. Retrying the same local
-        # model only doubles CPU work and increases queue latency, so a
-        # failed primary generation is surfaced as a failed triage result.
         logger.error(
             f"Failed to analyze alert "
-            f"{alert.alert_id} "
-            "with the configured Ollama model"
-        )
-
-        # -------------------------------------------------
-        # BOTH MODELS FAILED
-        # -------------------------------------------------
-
-        logger.error(
-            f"Failed to analyze alert "
-            f"{alert.alert_id} "
-            f"with all models"
+            f"{alert.alert_id} with all configured "
+            f"Ollama models"
         )
 
         return None
