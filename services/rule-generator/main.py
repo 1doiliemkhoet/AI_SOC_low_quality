@@ -156,6 +156,7 @@ def _normalize_generated_sigma(rule_text: str, request: RuleGenerationRequest) -
         # The model may invent extra top-level metadata. Keep the generated
         # rule focused on standard Sigma fields.
         document.pop("evidence", None)
+        document.pop("condition", None)
 
         # MITRE tags must come only from the request, using canonical lowercase
         # ATT&CK tag names.
@@ -185,7 +186,11 @@ def _normalize_generated_sigma(rule_text: str, request: RuleGenerationRequest) -
             if isinstance(selection, dict):
                 for field in list(selection):
                     if field.lower() in unsupported_temporal_fields:
-                        field_present = field.lower() in raw_evidence
+                        # Treat a temporal field as supported only when the raw
+                        # evidence contains it as a structured field, not merely
+                        # as prose such as "non-business hours".
+                        field_pattern = rf'(?i)(?:"{re.escape(field)}"\\s*[:=]|\\b{re.escape(field)}\\b\\s*[:=])'
+                        field_present = re.search(field_pattern, raw_evidence) is not None
                         if not field_present:
                             selection.pop(field)
 
