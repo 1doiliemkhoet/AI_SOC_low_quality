@@ -49,6 +49,10 @@ def validate_input(
         logger.warning("Null byte detected in input")
         return False, "Invalid characters in input"
 
+    # Detect path traversal before input is passed to downstream handlers.
+    if detect_path_traversal(text):
+        return False, "Invalid path pattern detected"
+
     # Detect SQL injection patterns (basic)
     sql_patterns = [
         r'(\bUNION\b.*\bSELECT\b)',
@@ -171,6 +175,11 @@ def detect_prompt_injection(text: str) -> tuple[bool, Optional[str]]:
         # Output manipulation
         (r'output\s+your\s+(prompt|instructions)', 'output_manipulation'),
         (r'what\s+(is|are)\s+your\s+(system|original)\s+(prompt|instructions)', 'output_manipulation'),
+
+        # Indirect instruction/data exfiltration attempts
+        (r'ignore\s+(your|the)\s+training', 'instruction_injection'),
+        (r'ignore\s+the\s+[^\n]{1,80}\s+and\s+instead', 'instruction_injection'),
+        (r'instead\s+(tell|give|reveal|show)\s+(me\s+)?(your\s+)?(prompt|instructions)', 'output_manipulation'),
     ]
 
     for pattern, attack_type in injection_patterns:
