@@ -145,10 +145,11 @@ def determine_approval_tier(
     if confidence >= auto_execute_min and blast_severity <= 1:
         return ApprovalTier.AUTO_SAFE
 
-    # High confidence + medium blast: auto with veto window
+    # AUTO_VETO is not currently executable because the orchestrator has
+    # no implemented veto-window timer/claim/reversal path. Fail closed by
+    # requiring explicit human approval until that mechanism exists.
     if confidence >= auto_veto_min and blast_severity <= 2:
-        if target_criticality != "critical":
-            return ApprovalTier.AUTO_VETO
+        return ApprovalTier.HUMAN_REQUIRED
 
     # Medium confidence + medium blast: human required
     if blast_severity >= 2:
