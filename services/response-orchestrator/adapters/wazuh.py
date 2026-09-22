@@ -16,6 +16,7 @@ This adapter also handles:
   - Host isolation via network interface manipulation
 """
 
+import ipaddress
 import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -83,6 +84,20 @@ class WazuhAdapter(BaseAdapter):
             )
             resp.raise_for_status()
             return resp.json()
+
+    @staticmethod
+    def _validate_ip_target(
+        action_type: str,
+        target: str,
+    ) -> Optional[str]:
+        """Return an error when an IP-based action receives an unsafe target."""
+        try:
+            ip = ipaddress.ip_address(target)
+        except ValueError:
+            return f"Invalid IP target for {action_type}: {target!r}"
+        if ip.is_unspecified or ip.is_multicast or ip.is_reserved:
+            return f"Unsafe IP target for {action_type}: {target!r}"
+        return None
 
     @staticmethod
     def _active_response_result(
@@ -182,6 +197,17 @@ class WazuhAdapter(BaseAdapter):
 
     async def _execute_block_ip(self, target: str, params: Dict) -> AdapterResult:
         """Block an IP using Wazuh Active Response firewall-drop."""
+        validation_error = self._validate_ip_target("block_ip", target)
+        if validation_error:
+            return AdapterResult(
+                success=False,
+                action_type="block_ip",
+                target=target,
+                adapter=self.name,
+                detail=validation_error,
+                error=validation_error,
+                rollback_capable=False,
+            )
         # Exclude the manager (000) from endpoint enforcement when "all" is requested.
         agent_list = await self._resolve_target_agents(
             params.get("agent_list", ["all"])
@@ -232,6 +258,17 @@ class WazuhAdapter(BaseAdapter):
 
     async def _execute_isolate_host(self, target: str, params: Dict) -> AdapterResult:
         """Isolate a host by running network isolation script via Wazuh AR."""
+        validation_error = self._validate_ip_target("isolate_host", target)
+        if validation_error:
+            return AdapterResult(
+                success=False,
+                action_type="isolate_host",
+                target=target,
+                adapter=self.name,
+                detail=validation_error,
+                error=validation_error,
+                rollback_capable=False,
+            )
         agent_id = params.get("agent_id")
 
         if not agent_id:
@@ -346,7 +383,30 @@ class WazuhAdapter(BaseAdapter):
 
     async def _execute_kill_process(self, target: str, params: Dict) -> AdapterResult:
         """Kill a process on a host via Wazuh Active Response."""
-        process_name = params.get("process_name", "unknown")
+        validation_error = self._validate_ip_target("kill_process", target)
+        if validation_error:
+            return AdapterResult(
+                success=False,
+                action_type="kill_process",
+                target=target,
+                adapter=self.name,
+                detail=validation_error,
+                error=validation_error,
+                rollback_capable=False,
+            )
+
+        process_name = str(params.get("process_name", "")).strip()
+        if not process_name or process_name.lower() == "unknown":
+            return AdapterResult(
+                success=False,
+                action_type="kill_process",
+                target=target,
+                adapter=self.name,
+                detail="Missing process_name",
+                error="Missing process_name",
+                rollback_capable=False,
+            )
+
         agent_id = params.get("agent_id")
 
         body = {
