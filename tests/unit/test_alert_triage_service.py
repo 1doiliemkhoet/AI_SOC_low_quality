@@ -150,23 +150,51 @@ class TestOllamaClient:
         assert is_healthy is False
 
     @patch('httpx.AsyncClient')
-    async def test_analyze_alert_success(self, mock_client, sample_security_alert, mock_ollama_response):
+    async def test_analyze_alert_success(self, mock_client, sample_security_alert):
         """Test successful alert analysis"""
+        import json
+
         from llm_client import OllamaClient
+        from config import settings
 
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = mock_ollama_response
+        mock_client.return_value.__aenter__.return_value.post = AsyncMock()
+        settings.ml_enabled = False
 
-        mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+        llm_output = json.dumps({
+            "severity": "high",
+            "category": "intrusion_attempt",
+            "confidence": 0.95,
+            "summary": "Brute force attack detected",
+            "detailed_analysis": "Multiple failed SSH login attempts indicate a brute-force attempt.",
+            "potential_impact": "Unauthorized account access may occur if the attack succeeds.",
+            "is_true_positive": True,
+            "iocs": [{
+                "ioc_type": "ip",
+                "value": "192.168.1.100",
+                "confidence": 0.95,
+            }],
+            "mitre_techniques": ["T1110.001"],
+            "mitre_tactics": ["Credential Access"],
+            "recommendations": [{
+                "action": "Block source IP",
+                "priority": 1,
+                "rationale": "Prevent further authentication attempts from the source.",
+            }],
+            "investigation_priority": 2,
+        })
 
         client = OllamaClient()
+        client.context_manager.build_context = AsyncMock(return_value="")
+        client._call_ollama = AsyncMock(return_value=llm_output)
+
         alert = SecurityAlert(**sample_security_alert)
         result = await client.analyze_alert(alert)
 
         assert result is not None
         assert isinstance(result, TriageResponse)
         assert result.alert_id == alert.alert_id
+        assert result.severity == "high"
+        assert result.confidence == 0.95
 
 
 # ============================================================================
@@ -325,14 +353,17 @@ class TestErrorHandling:
 class TestPerformance:
     """Test performance characteristics"""
 
-    def test_model_validation_performance(self, sample_security_alert, benchmark):
-        """Benchmark Pydantic model validation speed"""
-        def create_alert():
-            return SecurityAlert(**sample_security_alert)
+    def test_model_validation_performance(self, sample_security_alert):
+        """Check Pydantic model validation remains fast without an optional benchmark plugin."""
+        import time
 
-        # Should be fast (<1ms)
-        result = benchmark(create_alert)
-        assert result is not None
+        iterations = 1000
+        start = time.perf_counter()
+        for _ in range(iterations):
+            SecurityAlert(**sample_security_alert)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+
+        assert elapsed_ms < 1000
 
 
 if __name__ == "__main__":
