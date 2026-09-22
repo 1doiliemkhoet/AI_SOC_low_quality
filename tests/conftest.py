@@ -10,7 +10,7 @@ Date: 2025-10-22
 import os
 import sys
 import pytest
-import asyncio
+import pytest_asyncio
 from pathlib import Path
 from typing import AsyncGenerator, Generator
 
@@ -41,12 +41,98 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "requires_docker: Tests requiring Docker")
 
 
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create event loop for async tests"""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
+# pytest-asyncio provides the event_loop fixture.
+# Do not override it here; newer pytest-asyncio versions manage loop lifecycle.
+
+# ============================================================================
+# Service module isolation
+# ============================================================================
+# Several services expose top-level modules with the same names (for example
+# `config.py` and `models.py`). Tests import those modules directly, so the
+# active service path must be isolated per test to avoid cross-service imports.
+
+_SERVICE_DIRS = {
+    "alert-triage": PROJECT_ROOT / "services" / "alert-triage",
+    "response-orchestrator": PROJECT_ROOT / "services" / "response-orchestrator",
+}
+
+
+def _module_in_service_dir(module, service_dirs):
+    module_file = getattr(module, "__file__", None)
+    if not module_file:
+        return False
+
+    try:
+        module_path = Path(module_file).resolve()
+    except OSError:
+        return False
+
+    return any(
+        module_path == service_dir.resolve() or service_dir.resolve() in module_path.parents
+        for service_dir in service_dirs.values()
+    )
+
+
+@pytest.fixture(autouse=True)
+def isolate_service_modules(request):
+    """
+    Keep service-local top-level imports isolated between service test files.
+
+    The fixture only acts on tests that exercise one of the services with
+    conflicting top-level module names. Existing imported service modules are
+    restored after each test so the next service gets a clean import context.
+    """
+    test_name = Path(str(request.path)).name
+    target_service = {
+        "test_alert_triage_service.py": "alert-triage",
+        "test_response_orchestrator.py": "response-orchestrator",
+    }.get(test_name)
+
+    if target_service is None:
+        yield
+        return
+
+    original_sys_path = list(sys.path)
+    saved_modules = {}
+
+    target_dir = _SERVICE_DIRS[target_service]
+    target_resolved = target_dir.resolve()
+
+    # Keep modules that already belong to the target service. They may have
+    # been imported by the test module during collection and must remain the
+    # same class objects throughout that test file (for example TriageResponse).
+    for module_name, module in list(sys.modules.items()):
+        module_file = getattr(module, "__file__", None)
+        if not module_file:
+            continue
+
+        try:
+            module_path = Path(module_file).resolve()
+        except OSError:
+            continue
+
+        belongs_to_service = any(
+            service_dir.resolve() in module_path.parents
+            for service_dir in _SERVICE_DIRS.values()
+        )
+
+        if belongs_to_service and target_resolved not in module_path.parents:
+            saved_modules[module_name] = module
+            sys.modules.pop(module_name, None)
+
+    target_path = str(target_resolved)
+    sys.path[:] = [target_path] + [entry for entry in sys.path if entry != target_path]
+
+    try:
+        yield
+    finally:
+        sys.path[:] = original_sys_path
+
+        # Restore modules belonging to other services that were temporarily
+        # removed before this test.
+        for module_name, module in saved_modules.items():
+            if module_name not in sys.modules:
+                sys.modules[module_name] = module
 
 
 # ============================================================================
@@ -94,14 +180,14 @@ def sample_security_alert() -> dict:
         "alert_id": "test-alert-001",
         "timestamp": "2025-10-22T10:30:00Z",
         "source_ip": "192.168.1.100",
-        "destination_ip": "10.0.0.50",
+        "dest_ip": "10.0.0.50",
         "rule_id": "100002",
         "rule_level": 10,
         "rule_description": "Multiple failed SSH login attempts detected",
-        "full_log": "Oct 22 10:30:00 server sshd[1234]: Failed password for root from 192.168.1.100",
-        "agent_name": "web-server-01",
-        "mitre_tactic": "Credential Access",
-        "mitre_technique": "T1110.001"
+        "raw_log": "Oct 22 10:30:00 server sshd[1234]: Failed password for root from 192.168.1.100",
+        "full_log": {"message": "Failed password for root from 192.168.1.100"},
+        "user": "root",
+        "mitre_technique": ["T1110.001"]
     }
 
 
@@ -172,9 +258,9 @@ def mock_ml_prediction() -> dict:
 # HTTP Client Fixtures
 # ============================================================================
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def http_client():
-    """Async HTTP client for API testing"""
+    """Async HTTP client for API testing."""
     import httpx
     async with httpx.AsyncClient(timeout=30.0) as client:
         yield client
