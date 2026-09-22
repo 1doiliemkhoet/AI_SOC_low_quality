@@ -159,14 +159,14 @@ def sample_security_alert() -> dict:
         "alert_id": "test-alert-001",
         "timestamp": "2025-10-22T10:30:00Z",
         "source_ip": "192.168.1.100",
-        "destination_ip": "10.0.0.50",
+        "dest_ip": "10.0.0.50",
         "rule_id": "100002",
         "rule_level": 10,
         "rule_description": "Multiple failed SSH login attempts detected",
-        "full_log": "Oct 22 10:30:00 server sshd[1234]: Failed password for root from 192.168.1.100",
-        "agent_name": "web-server-01",
-        "mitre_tactic": "Credential Access",
-        "mitre_technique": "T1110.001"
+        "raw_log": "Oct 22 10:30:00 server sshd[1234]: Failed password for root from 192.168.1.100",
+        "full_log": {"message": "Failed password for root from 192.168.1.100"},
+        "user": "root",
+        "mitre_technique": ["T1110.001"]
     }
 
 
