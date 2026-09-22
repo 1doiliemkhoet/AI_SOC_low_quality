@@ -29,7 +29,7 @@ from models import (
     HealthResponse, TriggerPlanRequest, ApproveActionRequest,
     VerificationResult,
 )
-from orchestrator import ResponseOrchestrator
+from orchestrator import ResponseOrchestrator, SimulationUnavailableError
 
 import httpx
 
@@ -230,6 +230,9 @@ async def trigger_defense(request: TriggerPlanRequest):
     except ValueError as e:
         PLANS_TRIGGERED.labels(status="not_found").inc()
         raise HTTPException(status_code=404, detail=str(e))
+    except SimulationUnavailableError as e:
+        PLANS_TRIGGERED.labels(status="simulation_unavailable").inc()
+        raise HTTPException(status_code=503, detail=str(e))
     except RuntimeError as e:
         PLANS_TRIGGERED.labels(status="rate_limited").inc()
         raise HTTPException(status_code=429, detail=str(e))

@@ -55,6 +55,10 @@ from metrics import (
 logger = logging.getLogger(__name__)
 
 
+class SimulationUnavailableError(RuntimeError):
+    """Raised when required defense-planning simulation cannot be completed."""
+
+
 _TERMINAL_ACTION_STATUSES = frozenset({
     ActionStatus.COMPLETED,
     ActionStatus.FAILED,
@@ -587,12 +591,16 @@ class ResponseOrchestrator:
                         f"Simulation complete: {result.get('simulation_id', 'unknown')}"
                     )
                     return result
-                else:
-                    logger.error(f"Simulation failed: {resp.status_code}")
+                detail = f"Simulation service returned HTTP {resp.status_code}"
+                logger.error(detail)
+                raise SimulationUnavailableError(detail)
+        except SimulationUnavailableError:
+            raise
         except Exception as e:
             logger.error(f"Simulation request failed: {e}")
-
-        return None
+            raise SimulationUnavailableError(
+                f"Required simulation could not be completed: {e}"
+            ) from e
 
     # ----- Action Execution -----
 
