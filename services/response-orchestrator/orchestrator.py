@@ -866,6 +866,10 @@ class ResponseOrchestrator:
             notes=notes,
         )
 
+        # DB timestamps are timezone-aware; in-process tests may use naive UTC.
+        if approval_started_at.tzinfo is None:
+            approval_started_at = approval_started_at.replace(tzinfo=timezone.utc)
+
         APPROVAL_LATENCY.observe(
             max(
                 (datetime.now(timezone.utc) - approval_started_at).total_seconds(),
