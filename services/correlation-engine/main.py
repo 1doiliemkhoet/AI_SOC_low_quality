@@ -53,6 +53,7 @@ from defender_archetypes import DEFENDER_ARCHETYPE_PROMPTS
 from swarm import SwarmSimulator, SwarmConfig
 from history_store import HistoryStore
 from research_metrics import compute_all_metrics, export_for_paper, prediction_accuracy
+from simulation_control import SimulationCoordinator
 import asyncio
 
 # ---------------------------------------------------------------------------
@@ -60,6 +61,7 @@ import asyncio
 # ---------------------------------------------------------------------------
 
 settings = get_settings()
+SIMULATION_COORDINATOR = SimulationCoordinator()
 
 logging.basicConfig(
     level=settings.log_level,
@@ -551,6 +553,12 @@ async def run_simulation(
     timesteps: int = Query(3, ge=1, le=10),
     environment_json: Optional[Dict] = None,
 ):
+    if not await SIMULATION_COORDINATOR.try_acquire():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A simulation is already running. Try again after it completes.",
+        )
+
     """
     Run an attack campaign simulation against the infrastructure environment.
 
@@ -569,8 +577,9 @@ async def run_simulation(
         ollama_model=settings.simulator_ollama_model,
     )
 
-    # Load environment
+    env = None
     try:
+        # Load environment
         if environment_json:
             env = Environment.from_dict(environment_json)
         elif settings.simulator_environment_config:
@@ -587,13 +596,19 @@ async def run_simulation(
                     "Pass environment_json in the request body or set "
                     "CORRELATION_SIMULATOR_ENVIRONMENT_CONFIG."
                 )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to load environment: {e}")
 
-    simulator = CampaignSimulator(config)
-
-    try:
-        report = await simulator.run(env)
+        config = SimulationConfig(
+            agent_archetypes=archetypes or ["opportunist", "apt", "ransomware", "insider"],
+            timesteps=timesteps,
+            concurrency=settings.simulator_default_concurrency,
+            ollama_host=settings.simulator_ollama_host,
+            ollama_model=settings.simulator_ollama_model,
+        )
+        simulator = CampaignSimulator(config)
+        report = await asyncio.wait_for(
+            simulator.run(env),
+            timeout=settings.simulator_timeout_seconds,
+        )
 
         # Store for chat feature (LRU, max 20)
         store = getattr(app.state, "simulation_store", None)
@@ -604,9 +619,27 @@ async def run_simulation(
                 store.popitem(last=False)
 
         return report
+    except asyncio.TimeoutError:
+        if env is not None:
+            env.reset()
+        logger.error(
+            "Simulation timed out after %ss",
+            settings.simulator_timeout_seconds,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=(
+                f"Simulation timed out after "
+                f"{settings.simulator_timeout_seconds} seconds"
+            ),
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Simulation failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Simulation failed: {e}")
+    finally:
+        SIMULATION_COORDINATOR.release()
 
 
 
@@ -876,6 +909,12 @@ async def generate_dataset(
     timesteps: int = Query(3, ge=1, le=10, description="Timesteps per run"),
     environment_json: Optional[Dict] = None,
 ):
+    if not await SIMULATION_COORDINATOR.try_acquire():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A simulation is already running. Try again after it completes.",
+        )
+
     """
     Run N simulations with randomized environments and collect all traces into
     a structured dataset.
@@ -886,8 +925,8 @@ async def generate_dataset(
     Note: This is a long-running endpoint. For large runs (>50) consider running
     dataset_generator.py directly via the CLI.
     """
-    # Load base environment
     try:
+        # Load base environment
         if environment_json:
             base_env_dict = environment_json
         elif settings.simulator_environment_config:
@@ -907,27 +946,39 @@ async def generate_dataset(
                            "Pass environment_json in the request body or set "
                            "CORRELATION_SIMULATOR_ENVIRONMENT_CONFIG.",
                 )
+
+        generator = DatasetGenerator(
+            ollama_host=settings.simulator_ollama_host,
+            ollama_model=settings.simulator_ollama_model,
+            concurrency=settings.simulator_default_concurrency,
+        )
+        return await asyncio.wait_for(
+            generator.generate(
+                num_runs=runs,
+                base_environment=base_env_dict,
+                timesteps=timesteps,
+            ),
+            timeout=settings.simulator_timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            "Dataset generation timed out after %ss",
+            settings.simulator_timeout_seconds,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=(
+                f"Dataset generation timed out after "
+                f"{settings.simulator_timeout_seconds} seconds"
+            ),
+        )
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Failed to load environment: {exc}")
-
-    generator = DatasetGenerator(
-        ollama_host=settings.simulator_ollama_host,
-        ollama_model=settings.simulator_ollama_model,
-        concurrency=settings.simulator_default_concurrency,
-    )
-
-    try:
-        dataset = await generator.generate(
-            num_runs=runs,
-            base_environment=base_env_dict,
-            timesteps=timesteps,
-        )
-        return dataset
-    except Exception as exc:
         logger.error("Dataset generation failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Dataset generation failed: {exc}")
+    finally:
+        SIMULATION_COORDINATOR.release()
 
 
 # ---------------------------------------------------------------------------
@@ -943,6 +994,12 @@ async def start_swarm_simulation(
     defenders_enabled: bool = Query(True),
     environment_json: Optional[Dict] = None,
 ):
+    if not await SIMULATION_COORDINATOR.try_acquire():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A simulation is already running. Try again after it completes.",
+        )
+
     """
     Start a swarm simulation in the background.
 
@@ -952,8 +1009,9 @@ async def start_swarm_simulation(
     Spawns N follower agents per archetype across M Monte Carlo batches.
     Leaders use LLM decisions; followers replay with randomized parameters.
     """
-    # Load environment
+    env = None
     try:
+        # Load environment
         if environment_json:
             env = Environment.from_dict(environment_json)
         elif settings.simulator_environment_config:
@@ -967,49 +1025,61 @@ async def start_swarm_simulation(
                     status_code=400,
                     detail="No environment config provided and default not found.",
                 )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Failed to load environment: {exc}")
 
-    config = SwarmConfig(
-        agent_archetypes=["opportunist", "apt", "ransomware", "insider"],
-        defenders_enabled=defenders_enabled,
-        timesteps=timesteps,
-        swarm_size=swarm_size,
-        monte_carlo_runs=monte_carlo_runs,
-        concurrency=settings.simulator_default_concurrency,
-        ollama_host=settings.simulator_ollama_host,
-        ollama_model=settings.simulator_ollama_model,
-    )
+        config = SwarmConfig(
+            agent_archetypes=["opportunist", "apt", "ransomware", "insider"],
+            defenders_enabled=defenders_enabled,
+            timesteps=timesteps,
+            swarm_size=swarm_size,
+            monte_carlo_runs=monte_carlo_runs,
+            concurrency=settings.simulator_default_concurrency,
+            ollama_host=settings.simulator_ollama_host,
+            ollama_model=settings.simulator_ollama_model,
+        )
 
-    simulator = SwarmSimulator(config)
+        simulator = SwarmSimulator(config)
 
-    import asyncio as _asyncio
+        async def _run_swarm():
+            try:
+                report = await asyncio.wait_for(
+                    simulator.run(env),
+                    timeout=settings.simulator_timeout_seconds,
+                )
+                # Store in memory
+                store = getattr(app.state, "swarm_store", None)
+                if store is not None:
+                    store[report["swarm_id"]] = report
+                    while len(store) > 5:
+                        store.popitem(last=False)
+                # Persist to history (for trends + research)
+                hist = getattr(app.state, "history_store", None)
+                if hist:
+                    hist.append(report, trigger="manual", env_snapshot=env.snapshot())
+                    spike = hist.detect_risk_spike()
+                    if spike:
+                        logger.warning(f"RISK SPIKE DETECTED: {spike}")
+                return report
+            except asyncio.TimeoutError:
+                if env is not None:
+                    env.reset()
+                logger.error(
+                    "Swarm simulation timed out after %ss",
+                    settings.simulator_timeout_seconds,
+                )
+                return {
+                    "error": (
+                        f"Swarm simulation timed out after "
+                        f"{settings.simulator_timeout_seconds} seconds"
+                    )
+                }
+            except Exception as e:
+                logger.error(f"Swarm simulation failed: {e}", exc_info=True)
+                return {"error": str(e)}
+            finally:
+                SIMULATION_COORDINATOR.release()
 
-    async def _run_swarm():
-        try:
-            report = await simulator.run(env)
-            # Store in memory
-            store = getattr(app.state, "swarm_store", None)
-            if store is not None:
-                store[report["swarm_id"]] = report
-                while len(store) > 5:
-                    store.popitem(last=False)
-            # Persist to history (for trends + research)
-            hist = getattr(app.state, "history_store", None)
-            if hist:
-                hist.append(report, trigger="manual", env_snapshot=env.snapshot())
-                spike = hist.detect_risk_spike()
-                if spike:
-                    logger.warning(f"RISK SPIKE DETECTED: {spike}")
-            return report
-        except Exception as e:
-            logger.error(f"Swarm simulation failed: {e}", exc_info=True)
-            return {"error": str(e)}
-
-    # Launch as background task
-    task = _asyncio.create_task(_run_swarm())
+        # Launch as background task
+        task = asyncio.create_task(_run_swarm())
     swarm_id = f"SWARM-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
     tasks = getattr(app.state, "swarm_tasks", {})
     tasks[swarm_id] = {"task": task, "simulator": simulator}
