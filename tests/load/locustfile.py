@@ -50,8 +50,8 @@ def generate_security_alert():
 
 def generate_network_flow():
     """Generate random network flow for ML inference"""
-    # Generate 78 random features
-    features = [random.uniform(0, 1000) for _ in range(78)]
+    # Generate 77 random features
+    features = [random.uniform(0, 1000) for _ in range(77)]
 
     return {
         "features": features,
