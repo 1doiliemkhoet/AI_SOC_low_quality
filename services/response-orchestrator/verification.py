@@ -257,42 +257,76 @@ class VerificationEngine:
         techniques: List[str],
         since_minutes: int = 5,
     ) -> List[Dict]:
-        """Query Wazuh for recent alerts matching incident indicators."""
-        try:
-            # Authenticate
-            async with httpx.AsyncClient(verify=self.wazuh_verify_ssl) as client:
-                auth_resp = await client.post(
-                    f"{self.wazuh_api_url}/security/user/authenticate",
-                    auth=(self.wazuh_username, self.wazuh_password),
-                    timeout=10.0,
-                )
-                auth_resp.raise_for_status()
-                token = auth_resp.json().get("data", {}).get("token", "")
+        """Query Wazuh Indexer for recent alerts matching incident indicators."""
+        if not source_ips:
+            return []
 
-                # Query alerts
-                headers = {"Authorization": f"Bearer {token}"}
-                resp = await client.get(
-                    f"{self.wazuh_api_url}/alerts",
-                    headers=headers,
-                    params={
-                        "limit": 20,
-                        "sort": "-timestamp",
-                    },
+        now = datetime.utcnow()
+        since = now - timedelta(minutes=max(since_minutes, 1))
+        query = {
+            "size": 20,
+            "sort": [{"timestamp": {"order": "desc"}}],
+            "_source": True,
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "range": {
+                                "timestamp": {
+                                    "gte": since.isoformat() + "Z",
+                                    "lte": now.isoformat() + "Z",
+                                }
+                            }
+                        },
+                        {
+                            "terms": {
+                                "data.srcip": source_ips,
+                            }
+                        },
+                    ]
+                }
+            },
+        }
+
+        try:
+            async with httpx.AsyncClient(
+                verify=self.wazuh_indexer_verify_ssl
+            ) as client:
+                resp = await client.post(
+                    f"{self.wazuh_indexer_url}/wazuh-alerts-*/_search",
+                    auth=(
+                        self.wazuh_indexer_username,
+                        self.wazuh_indexer_password,
+                    ),
+                    json=query,
                     timeout=15.0,
                 )
                 resp.raise_for_status()
 
-                alerts = resp.json().get("data", {}).get("affected_items", [])
+                hits = resp.json().get("hits", {}).get("hits", [])
+                alerts = [
+                    hit.get("_source", {})
+                    for hit in hits
+                    if hit.get("_source")
+                ]
 
-                # Filter for alerts matching our indicators
-                matching = []
-                for alert in alerts:
-                    src = alert.get("data", {}).get("srcip", "")
-                    if src in source_ips:
-                        matching.append(alert)
+                if techniques:
+                    matching_techniques = set(techniques)
+                    technique_filtered = []
+                    for alert in alerts:
+                        alert_techniques = (
+                            alert.get("rule", {}).get("mitre", {}).get("id", [])
+                        )
+                        if isinstance(alert_techniques, str):
+                            alert_techniques = [alert_techniques]
+                        if matching_techniques.intersection(alert_techniques):
+                            technique_filtered.append(alert)
+                    alerts = technique_filtered
 
-                return matching
+                return alerts
 
         except Exception as e:
-            logger.warning(f"Wazuh alert check failed: {e}")
-            raise RuntimeError(f"Wazuh alert monitoring query failed: {e}") from e
+            logger.warning(f"Wazuh Indexer alert check failed: {e}")
+            raise RuntimeError(
+                f"Wazuh Indexer alert monitoring query failed: {e}"
+            ) from e
