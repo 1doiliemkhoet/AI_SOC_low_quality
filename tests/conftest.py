@@ -44,6 +44,75 @@ def pytest_configure(config):
 # pytest-asyncio provides the event_loop fixture.
 # Do not override it here; newer pytest-asyncio versions manage loop lifecycle.
 
+# ============================================================================
+# Service module isolation
+# ============================================================================
+# Several services expose top-level modules with the same names (for example
+# `config.py` and `models.py`). Tests import those modules directly, so the
+# active service path must be isolated per test to avoid cross-service imports.
+
+_SERVICE_DIRS = {
+    "alert-triage": PROJECT_ROOT / "services" / "alert-triage",
+    "response-orchestrator": PROJECT_ROOT / "services" / "response-orchestrator",
+}
+
+
+def _module_in_service_dir(module, service_dirs):
+    module_file = getattr(module, "__file__", None)
+    if not module_file:
+        return False
+
+    try:
+        module_path = Path(module_file).resolve()
+    except OSError:
+        return False
+
+    return any(
+        module_path == service_dir.resolve() or service_dir.resolve() in module_path.parents
+        for service_dir in service_dirs.values()
+    )
+
+
+@pytest.fixture(autouse=True)
+def isolate_service_modules(request):
+    """
+    Keep service-local top-level imports isolated between service test files.
+
+    The fixture only acts on tests that exercise one of the services with
+    conflicting top-level module names. Existing imported service modules are
+    restored after each test so the next service gets a clean import context.
+    """
+    test_name = Path(str(request.path)).name
+    target_service = {
+        "test_alert_triage_service.py": "alert-triage",
+        "test_response_orchestrator.py": "response-orchestrator",
+    }.get(test_name)
+
+    if target_service is None:
+        yield
+        return
+
+    original_sys_path = list(sys.path)
+    saved_modules = {}
+
+    for module_name, module in list(sys.modules.items()):
+        if _module_in_service_dir(module, _SERVICE_DIRS):
+            saved_modules[module_name] = module
+            sys.modules.pop(module_name, None)
+
+    target_path = str(_SERVICE_DIRS[target_service].resolve())
+    sys.path[:] = [target_path] + [entry for entry in sys.path if entry != target_path]
+
+    try:
+        yield
+    finally:
+        for module_name, module in list(sys.modules.items()):
+            if _module_in_service_dir(module, _SERVICE_DIRS):
+                sys.modules.pop(module_name, None)
+
+        sys.path[:] = original_sys_path
+        sys.modules.update(saved_modules)
+
 
 # ============================================================================
 # Service URL Fixtures
