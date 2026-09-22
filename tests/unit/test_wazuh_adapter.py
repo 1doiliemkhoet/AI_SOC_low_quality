@@ -27,14 +27,17 @@ def make_adapter() -> WazuhAdapter:
 async def test_block_ip_rejects_wazuh_business_failure():
     adapter = make_adapter()
     adapter._api_call = AsyncMock(
-        return_value={
-            "error": 0,
-            "data": {
-                "total_failed_items": 1,
-                "affected_items": [],
-                "failed_items": [{"id": "001"}],
+        side_effect=[
+            {"data": {"affected_items": [{"id": "001"}]}},
+            {
+                "error": 0,
+                "data": {
+                    "total_failed_items": 1,
+                    "affected_items": [],
+                    "failed_items": [{"id": "001"}],
+                },
             },
-        }
+        ]
     )
 
     result = await adapter.execute("block_ip", "203.0.113.10")
