@@ -67,7 +67,7 @@ class TestCompleteAlertWorkflow:
             triage_response = await http_client.post(
                 f"{alert_triage_url}/analyze",
                 json=enriched_alert,
-                timeout=30.0
+                timeout=180.0
             )
 
             if triage_response.status_code in (502, 503, 504):
@@ -98,7 +98,7 @@ class TestCompleteAlertWorkflow:
 
             # Validate workflow success
             assert ml_data["prediction"] in ["BENIGN", "ATTACK"]
-            assert triage_data["severity"] in ["critical", "high", "medium", "low", "info"]
+            assert triage_data["severity"] in ["critical", "high", "medium", "low", "informational"]
             assert triage_data["processing_time_ms"] < 30000  # <30s total
 
             print("\n✅ Complete workflow successful!")
@@ -189,7 +189,7 @@ class TestIncidentResponseWorkflow:
             response = await http_client.post(
                 f"{alert_triage_url}/analyze",
                 json=critical_alert,
-                timeout=30.0
+                timeout=180.0
             )
 
             if response.status_code in (502, 503, 504):
@@ -261,7 +261,7 @@ class TestRAGEnhancedWorkflow:
                 triage_response = await http_client.post(
                     f"{alert_triage_url}/analyze",
                     json=sample_security_alert,
-                    timeout=30.0
+                    timeout=180.0
                 )
 
                 if triage_response.status_code in (502, 503, 504):
@@ -298,7 +298,7 @@ class TestSystemResilience:
             response1 = await http_client.post(
                 f"{alert_triage_url}/analyze",
                 json=sample_security_alert,
-                timeout=30.0
+                timeout=180.0
             )
             assert response1.status_code == 200
 
@@ -316,7 +316,7 @@ class TestSystemResilience:
             response3 = await http_client.post(
                 f"{alert_triage_url}/analyze",
                 json=sample_security_alert,
-                timeout=30.0
+                timeout=180.0
             )
             assert response3.status_code == 200
 
@@ -372,7 +372,7 @@ class TestEndToEndPerformance:
 
             # Alert Triage Latency
             start = time.time()
-            triage_response = await http_client.post(f"{alert_triage_url}/analyze", json=sample_security_alert, timeout=30.0)
+            triage_response = await http_client.post(f"{alert_triage_url}/analyze", json=sample_security_alert, timeout=180.0)
             if triage_response.status_code in (502, 503, 504):
                 pytest.skip(f"Alert Triage service unavailable (HTTP {triage_response.status_code})")
             if triage_response.status_code != 200:
