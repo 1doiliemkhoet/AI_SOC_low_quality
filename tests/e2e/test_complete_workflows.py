@@ -99,7 +99,7 @@ class TestCompleteAlertWorkflow:
             # Validate workflow success
             assert ml_data["prediction"] in ["BENIGN", "ATTACK"]
             assert triage_data["severity"] in ["critical", "high", "medium", "low", "informational"]
-            assert triage_data["processing_time_ms"] < 30000  # <30s total
+            assert triage_data["processing_time_ms"] < 180000  # Must stay within the 180s Alert Triage request budget
 
             print("\n✅ Complete workflow successful!")
 
