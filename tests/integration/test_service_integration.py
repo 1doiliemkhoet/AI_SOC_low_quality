@@ -48,10 +48,9 @@ class TestAlertTriageOllamaIntegration:
         except (httpx.RequestError, asyncio.TimeoutError) as e:
             pytest.skip(f"Services unavailable: {e}")
 
-    async def test_ollama_fallback_model(self, http_client, alert_triage_url, sample_security_alert):
-        """Test fallback to secondary model when primary fails"""
+    async def test_ollama_configured_model(self, http_client, alert_triage_url, sample_security_alert):
+        """Verify Alert Triage returns the model configured for the running service."""
         try:
-            # Validate against the models configured for this runtime.
             response = await http_client.post(
                 f"{alert_triage_url}/analyze",
                 json=sample_security_alert,
@@ -59,25 +58,27 @@ class TestAlertTriageOllamaIntegration:
             )
 
             if response.status_code in (502, 503, 504):
-                pytest.skip(f"Alert Triage/Ollama unavailable (HTTP {response.status_code})")
+                pytest.skip(
+                    f"Alert Triage/Ollama unavailable (HTTP {response.status_code})"
+                )
             if response.status_code != 200:
                 pytest.fail(f"Unexpected status code: {response.status_code}")
 
             data = response.json()
             assert "model_used" in data
-            expected_models = {
+
+            configured_models = {
                 os.getenv("TRIAGE_PRIMARY_MODEL"),
                 os.getenv("TRIAGE_FALLBACK_MODEL"),
-                "llama3.2:3b",
-                "foundation-sec-8b",
-                "llama3.1:8b",
             }
-            expected_models = {m for m in expected_models if m}
-            assert data["model_used"] in expected_models
+            configured_models = {model for model in configured_models if model}
+
+            assert (
+                data["model_used"] in configured_models
+            ), f"Unexpected model_used={data['model_used']!r}; configured={configured_models}"
 
         except (httpx.RequestError, asyncio.TimeoutError) as e:
             pytest.skip(f"Services unavailable: {e}")
-
 
 # ============================================================================
 # RAG Service → ChromaDB Integration
