@@ -97,11 +97,11 @@ The rule must be in valid Sigma YAML format. Include:
 - description: What the rule detects
 - logsource: category, product, service
 - detection: one or more named selections; each selection MUST be a YAML mapping of log field names to values (for example 'selection: {{user: kali, event_type: login}}'). Put fields that must ALL match into the same mapping (AND semantics). Do NOT use a list of mappings for a single selection unless you intentionally need OR semantics. Do NOT use expressions such as 'field == value' and do NOT make selection a list of strings.
-- evidence: Use only log fields and values supported by the supplied raw log or network context. Do not invent fields such as hour/day unless they are explicitly present in the evidence.
+- evidence: Use only log fields and values explicitly present in the supplied raw log or network context. Do not invent fields, field values, time ranges, usernames, ports, or other facts that are not present. If the alert description mentions a concept such as non-business hours but the raw evidence does not contain a time field/value, do not fabricate one.
 - condition: MUST reference only named detection selections that actually exist. Prefer the simple form 'condition: selection'. Use 'selection and filter' only when a separate filter selection is actually defined; never use values such as 'any' by themselves.
 - falsepositives: Known false positive scenarios
 - level: {severity}
-- tags: MITRE ATT&CK tags using the lowercase 'attack.<technique_id>' namespace, for example 'attack.t1078'
+- tags: Include ONLY the MITRE ATT&CK techniques supplied in the 'MITRE Techniques' input, converted to lowercase 'attack.<technique_id>' tags. Do not add other ATT&CK techniques.
 
 Attack Pattern:
 {description}
