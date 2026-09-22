@@ -53,6 +53,7 @@ from defender_archetypes import DEFENDER_ARCHETYPE_PROMPTS
 from swarm import SwarmSimulator, SwarmConfig
 from history_store import HistoryStore
 from research_metrics import compute_all_metrics, export_for_paper, prediction_accuracy
+from simulation_control import SimulationCoordinator
 import asyncio
 
 # ---------------------------------------------------------------------------
@@ -60,6 +61,7 @@ import asyncio
 # ---------------------------------------------------------------------------
 
 settings = get_settings()
+SIMULATION_COORDINATOR = SimulationCoordinator()
 
 logging.basicConfig(
     level=settings.log_level,
@@ -561,41 +563,51 @@ async def run_simulation(
 
     Default: 4 archetypes (opportunist, apt, ransomware, insider) x 3 timesteps.
     """
-    config = SimulationConfig(
-        agent_archetypes=archetypes or ["opportunist", "apt", "ransomware", "insider"],
-        timesteps=timesteps,
-        concurrency=settings.simulator_default_concurrency,
-        ollama_host=settings.simulator_ollama_host,
-        ollama_model=settings.simulator_ollama_model,
-    )
+    if not await SIMULATION_COORDINATOR.try_acquire():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A simulation is already running. Try again after it completes.",
+        )
 
-    # Load environment
+    env = None
     try:
-        if environment_json:
-            env = Environment.from_dict(environment_json)
-        elif settings.simulator_environment_config:
-            env = Environment.load_from_json(settings.simulator_environment_config)
-        else:
-            # Try default config path
-            default_path = "/app/config/simulation/default-environment.json"
-            try:
-                env = Environment.load_from_json(default_path)
-            except FileNotFoundError:
-                raise HTTPException(
-                    status_code=400,
-                    detail="No environment config provided and default not found. "
-                    "Pass environment_json in the request body or set "
-                    "CORRELATION_SIMULATOR_ENVIRONMENT_CONFIG."
-                )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to load environment: {e}")
+        try:
+            if environment_json:
+                env = Environment.from_dict(environment_json)
+            elif settings.simulator_environment_config:
+                env = Environment.load_from_json(settings.simulator_environment_config)
+            else:
+                default_path = "/app/config/simulation/default-environment.json"
+                try:
+                    env = Environment.load_from_json(default_path)
+                except FileNotFoundError:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="No environment config provided and default not found. "
+                        "Pass environment_json in the request body or set "
+                        "CORRELATION_SIMULATOR_ENVIRONMENT_CONFIG."
+                    )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to load environment: {exc}",
+            )
 
-    simulator = CampaignSimulator(config)
+        config = SimulationConfig(
+            agent_archetypes=archetypes or ["opportunist", "apt", "ransomware", "insider"],
+            timesteps=timesteps,
+            concurrency=settings.simulator_default_concurrency,
+            ollama_host=settings.simulator_ollama_host,
+            ollama_model=settings.simulator_ollama_model,
+        )
+        simulator = CampaignSimulator(config)
+        report = await asyncio.wait_for(
+            simulator.run(env),
+            timeout=settings.simulator_timeout_seconds,
+        )
 
-    try:
-        report = await simulator.run(env)
-
-        # Store for chat feature (LRU, max 20)
         store = getattr(app.state, "simulation_store", None)
         if store is not None:
             sim_id = report.get("simulation_id", "unknown")
@@ -604,10 +616,30 @@ async def run_simulation(
                 store.popitem(last=False)
 
         return report
-    except Exception as e:
-        logger.error(f"Simulation failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Simulation failed: {e}")
-
+    except asyncio.TimeoutError:
+        if env is not None:
+            env.reset()
+        logger.error(
+            "Simulation timed out after %ss",
+            settings.simulator_timeout_seconds,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=(
+                f"Simulation timed out after "
+                f"{settings.simulator_timeout_seconds} seconds"
+            ),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Simulation failed: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Simulation failed: {exc}",
+        )
+    finally:
+        SIMULATION_COORDINATOR.release()
 
 
 @app.get("/simulate/{simulation_id}")
@@ -886,48 +918,76 @@ async def generate_dataset(
     Note: This is a long-running endpoint. For large runs (>50) consider running
     dataset_generator.py directly via the CLI.
     """
-    # Load base environment
+    if not await SIMULATION_COORDINATOR.try_acquire():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A simulation is already running. Try again after it completes.",
+        )
+
     try:
-        if environment_json:
-            base_env_dict = environment_json
-        elif settings.simulator_environment_config:
-            import json as _json
-            with open(settings.simulator_environment_config) as fh:
-                base_env_dict = _json.load(fh)
-        else:
-            default_path = "/app/config/simulation/default-environment.json"
-            try:
+        try:
+            if environment_json:
+                base_env_dict = environment_json
+            elif settings.simulator_environment_config:
                 import json as _json
-                with open(default_path) as fh:
+                with open(settings.simulator_environment_config) as fh:
                     base_env_dict = _json.load(fh)
-            except FileNotFoundError:
-                raise HTTPException(
-                    status_code=400,
-                    detail="No environment config provided and default not found. "
-                           "Pass environment_json in the request body or set "
-                           "CORRELATION_SIMULATOR_ENVIRONMENT_CONFIG.",
-                )
+            else:
+                default_path = "/app/config/simulation/default-environment.json"
+                try:
+                    import json as _json
+                    with open(default_path) as fh:
+                        base_env_dict = _json.load(fh)
+                except FileNotFoundError:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="No environment config provided and default not found. "
+                               "Pass environment_json in the request body or set "
+                               "CORRELATION_SIMULATOR_ENVIRONMENT_CONFIG.",
+                    )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to load environment: {exc}",
+            )
+
+        generator = DatasetGenerator(
+            ollama_host=settings.simulator_ollama_host,
+            ollama_model=settings.simulator_ollama_model,
+            concurrency=settings.simulator_default_concurrency,
+        )
+        return await asyncio.wait_for(
+            generator.generate(
+                num_runs=runs,
+                base_environment=base_env_dict,
+                timesteps=timesteps,
+            ),
+            timeout=settings.simulator_timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            "Dataset generation timed out after %ss",
+            settings.simulator_timeout_seconds,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=(
+                f"Dataset generation timed out after "
+                f"{settings.simulator_timeout_seconds} seconds"
+            ),
+        )
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Failed to load environment: {exc}")
-
-    generator = DatasetGenerator(
-        ollama_host=settings.simulator_ollama_host,
-        ollama_model=settings.simulator_ollama_model,
-        concurrency=settings.simulator_default_concurrency,
-    )
-
-    try:
-        dataset = await generator.generate(
-            num_runs=runs,
-            base_environment=base_env_dict,
-            timesteps=timesteps,
-        )
-        return dataset
-    except Exception as exc:
         logger.error("Dataset generation failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Dataset generation failed: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Dataset generation failed: {exc}",
+        )
+    finally:
+        SIMULATION_COORDINATOR.release()
 
 
 # ---------------------------------------------------------------------------
@@ -952,64 +1012,99 @@ async def start_swarm_simulation(
     Spawns N follower agents per archetype across M Monte Carlo batches.
     Leaders use LLM decisions; followers replay with randomized parameters.
     """
-    # Load environment
+    if not await SIMULATION_COORDINATOR.try_acquire():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A simulation is already running. Try again after it completes.",
+        )
+
+    env = None
     try:
-        if environment_json:
-            env = Environment.from_dict(environment_json)
-        elif settings.simulator_environment_config:
-            env = Environment.load_from_json(settings.simulator_environment_config)
-        else:
-            default_path = "/app/config/simulation/default-environment.json"
+        try:
+            if environment_json:
+                env = Environment.from_dict(environment_json)
+            elif settings.simulator_environment_config:
+                env = Environment.load_from_json(settings.simulator_environment_config)
+            else:
+                default_path = "/app/config/simulation/default-environment.json"
+                try:
+                    env = Environment.load_from_json(default_path)
+                except FileNotFoundError:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="No environment config provided and default not found.",
+                    )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to load environment: {exc}",
+            )
+
+        config = SwarmConfig(
+            agent_archetypes=["opportunist", "apt", "ransomware", "insider"],
+            defenders_enabled=defenders_enabled,
+            timesteps=timesteps,
+            swarm_size=swarm_size,
+            monte_carlo_runs=monte_carlo_runs,
+            concurrency=settings.simulator_default_concurrency,
+            ollama_host=settings.simulator_ollama_host,
+            ollama_model=settings.simulator_ollama_model,
+        )
+
+        simulator = SwarmSimulator(config)
+
+        async def _run_swarm():
             try:
-                env = Environment.load_from_json(default_path)
-            except FileNotFoundError:
-                raise HTTPException(
-                    status_code=400,
-                    detail="No environment config provided and default not found.",
+                report = await asyncio.wait_for(
+                    simulator.run(env),
+                    timeout=settings.simulator_timeout_seconds,
                 )
+                store = getattr(app.state, "swarm_store", None)
+                if store is not None:
+                    store[report["swarm_id"]] = report
+                    while len(store) > 5:
+                        store.popitem(last=False)
+
+                hist = getattr(app.state, "history_store", None)
+                if hist:
+                    hist.append(report, trigger="manual", env_snapshot=env.snapshot())
+                    spike = hist.detect_risk_spike()
+                    if spike:
+                        logger.warning(f"RISK SPIKE DETECTED: {spike}")
+                return report
+            except asyncio.TimeoutError:
+                if env is not None:
+                    env.reset()
+                logger.error(
+                    "Swarm simulation timed out after %ss",
+                    settings.simulator_timeout_seconds,
+                )
+                return {
+                    "error": (
+                        f"Swarm simulation timed out after "
+                        f"{settings.simulator_timeout_seconds} seconds"
+                    )
+                }
+            except Exception as exc:
+                logger.error("Swarm simulation failed: %s", exc, exc_info=True)
+                return {"error": str(exc)}
+            finally:
+                SIMULATION_COORDINATOR.release()
+
+        task = asyncio.create_task(_run_swarm())
     except HTTPException:
+        SIMULATION_COORDINATOR.release()
         raise
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Failed to load environment: {exc}")
+        SIMULATION_COORDINATOR.release()
+        logger.error("Failed to start swarm simulation: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start swarm simulation: {exc}",
+        )
 
-    config = SwarmConfig(
-        agent_archetypes=["opportunist", "apt", "ransomware", "insider"],
-        defenders_enabled=defenders_enabled,
-        timesteps=timesteps,
-        swarm_size=swarm_size,
-        monte_carlo_runs=monte_carlo_runs,
-        concurrency=settings.simulator_default_concurrency,
-        ollama_host=settings.simulator_ollama_host,
-        ollama_model=settings.simulator_ollama_model,
-    )
-
-    simulator = SwarmSimulator(config)
-
-    import asyncio as _asyncio
-
-    async def _run_swarm():
-        try:
-            report = await simulator.run(env)
-            # Store in memory
-            store = getattr(app.state, "swarm_store", None)
-            if store is not None:
-                store[report["swarm_id"]] = report
-                while len(store) > 5:
-                    store.popitem(last=False)
-            # Persist to history (for trends + research)
-            hist = getattr(app.state, "history_store", None)
-            if hist:
-                hist.append(report, trigger="manual", env_snapshot=env.snapshot())
-                spike = hist.detect_risk_spike()
-                if spike:
-                    logger.warning(f"RISK SPIKE DETECTED: {spike}")
-            return report
-        except Exception as e:
-            logger.error(f"Swarm simulation failed: {e}", exc_info=True)
-            return {"error": str(e)}
-
-    # Launch as background task
-    task = _asyncio.create_task(_run_swarm())
     swarm_id = f"SWARM-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
     tasks = getattr(app.state, "swarm_tasks", {})
     tasks[swarm_id] = {"task": task, "simulator": simulator}
