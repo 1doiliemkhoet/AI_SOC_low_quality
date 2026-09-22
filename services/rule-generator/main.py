@@ -149,7 +149,7 @@ def _validate_sigma_rule(rule_text: str) -> tuple[bool, str]:
         # Every non-operator identifier in the condition must resolve to a
         # detection selection. Support Sigma patterns such as "selection_*",
         # "1 of selection_*", and "all of them".
-        condition_tokens = re.findall(r"(?<![\\w-])([A-Za-z_][\\w-]*\\*?)(?![\\w-])", condition)
+        condition_tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_-]*\\*?", condition)
         operators = {"and", "or", "not", "all", "any", "of", "them"}
         references = [token for token in condition_tokens if token.lower() not in operators]
 
