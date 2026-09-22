@@ -132,5 +132,7 @@ tags:
     normalized = _normalize_generated_sigma(rule, request)
     assert "hours:" not in normalized
     assert "evidence:" not in normalized
+    assert "condition: selection" in normalized
     assert "attack.t1078" in normalized
     assert "attack.T1210" not in normalized
+    assert "condition:" not in normalized.split("detection:", 1)[0]
