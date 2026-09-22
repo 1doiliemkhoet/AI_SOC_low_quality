@@ -10,7 +10,7 @@ Date: 2025-10-22
 import os
 import sys
 import pytest
-import asyncio
+import pytest_asyncio
 from pathlib import Path
 from typing import AsyncGenerator, Generator
 
@@ -41,12 +41,8 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "requires_docker: Tests requiring Docker")
 
 
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create event loop for async tests"""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
+# pytest-asyncio provides the event_loop fixture.
+# Do not override it here; newer pytest-asyncio versions manage loop lifecycle.
 
 
 # ============================================================================
@@ -172,9 +168,9 @@ def mock_ml_prediction() -> dict:
 # HTTP Client Fixtures
 # ============================================================================
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def http_client():
-    """Async HTTP client for API testing"""
+    """Async HTTP client for API testing."""
     import httpx
     async with httpx.AsyncClient(timeout=30.0) as client:
         yield client
