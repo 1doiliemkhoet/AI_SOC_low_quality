@@ -33,6 +33,16 @@ from safety import build_planned_action, check_plan_safety
 logger = logging.getLogger(__name__)
 
 
+# Only actions with a concrete execution path in the current stack are eligible
+# for production defense plans. Placeholder adapters are intentionally excluded.
+_EXECUTABLE_ACTIONS_BY_ADAPTER = {
+    AdapterType.WAZUH: frozenset({
+        ActionType.BLOCK_IP,
+        ActionType.ISOLATE_HOST,
+    }),
+}
+
+
 class DefensePlanner:
     """
     Generates defense plans for detected incidents.
@@ -103,6 +113,10 @@ class DefensePlanner:
             logger.warning(
                 f"No D3FEND countermeasures found for techniques: {detected_techniques}"
             )
+
+        d3fend_candidates = self._filter_executable_candidates(
+            d3fend_candidates
+        )
 
         # Step 2: Score each candidate using simulation results and environment
         impact_scores = self._compute_impact_scores(
@@ -208,6 +222,34 @@ class DefensePlanner:
         )
 
         return plan
+
+    # ----- Candidate Eligibility -----
+
+    def _filter_executable_candidates(
+        self, candidates: List[D3FENDTechnique]
+    ) -> List[D3FENDTechnique]:
+        """Keep only D3FEND actions backed by a real execution path."""
+        executable = []
+        skipped = []
+
+        for candidate in candidates:
+            allowed = _EXECUTABLE_ACTIONS_BY_ADAPTER.get(
+                candidate.adapter, frozenset()
+            )
+            if candidate.action_type in allowed:
+                executable.append(candidate)
+            else:
+                skipped.append(
+                    f"{candidate.action_type.value} via {candidate.adapter.value}"
+                )
+
+        if skipped:
+            logger.info(
+                "Skipping non-executable defense actions: %s",
+                ", ".join(skipped),
+            )
+
+        return executable
 
     # ----- Impact Scoring -----
 
