@@ -9,7 +9,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional, List, Dict, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class SeverityLevel(str, Enum):
@@ -58,15 +58,55 @@ class StoreAlertRequest(BaseModel):
 
 class FeedbackSubmission(BaseModel):
     """Analyst feedback on a triage result."""
-    analyst_id: str = Field(..., min_length=1, description="Analyst identifier")
+
+    analyst_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="Analyst identifier",
+    )
     true_severity: Optional[SeverityLevel] = Field(None, description="Corrected severity")
     true_category: Optional[AlertCategory] = Field(None, description="Corrected category")
     is_false_positive: bool = Field(False, description="Mark as false positive")
     true_label: Optional[str] = Field(
         None,
-        description="Ground truth label for ML retraining (BENIGN or attack type)"
+        max_length=20,
+        description="Ground truth label for current binary ML retraining (BENIGN or ATTACK)",
     )
     notes: Optional[str] = Field(None, max_length=2000, description="Analyst notes")
+
+    @field_validator("analyst_id", mode="before")
+    @classmethod
+    def normalize_analyst_id(cls, value: str) -> str:
+        """Reject blank identifiers while normalizing surrounding whitespace."""
+        if not isinstance(value, str):
+            raise ValueError("analyst_id must be a string")
+        value = value.strip()
+        if not value:
+            raise ValueError("analyst_id must not be blank")
+        return value
+
+    @field_validator("true_label", mode="before")
+    @classmethod
+    def normalize_true_label(cls, value: Optional[str]) -> Optional[str]:
+        """Normalize and restrict labels to the current binary ML contract."""
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("true_label must be a string")
+        value = value.strip().upper()
+        if value not in {"BENIGN", "ATTACK"}:
+            raise ValueError("true_label must be BENIGN or ATTACK")
+        return value
+
+    @model_validator(mode="after")
+    def validate_label_consistency(self):
+        """Keep false-positive state consistent with the retraining label."""
+        if self.true_label == "BENIGN" and not self.is_false_positive:
+            raise ValueError("BENIGN feedback must be marked as a false positive")
+        if self.true_label == "ATTACK" and self.is_false_positive:
+            raise ValueError("ATTACK feedback cannot be marked as a false positive")
+        return self
 
 
 class AlertQuery(BaseModel):
