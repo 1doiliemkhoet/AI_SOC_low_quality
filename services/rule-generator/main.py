@@ -146,6 +146,58 @@ def _ensure_sigma_condition(rule_text: str) -> str:
     return rule_text
 
 
+def _normalize_generated_sigma(rule_text: str, request: RuleGenerationRequest) -> str:
+    """Normalize model output so stored Sigma stays aligned with supplied evidence."""
+    try:
+        document = yaml.safe_load(rule_text)
+        if not isinstance(document, dict):
+            return rule_text
+
+        # The model may invent extra top-level metadata. Keep the generated
+        # rule focused on standard Sigma fields.
+        document.pop("evidence", None)
+
+        # MITRE tags must come only from the request, using canonical lowercase
+        # ATT&CK tag names.
+        requested_tags = [
+            f"attack.{technique.lower()}"
+            for technique in request.mitre_techniques
+            if technique
+        ]
+        if requested_tags:
+            document["tags"] = requested_tags
+
+        detection = document.get("detection")
+        if not isinstance(detection, dict):
+            return yaml.safe_dump(document, sort_keys=False)
+
+        # If temporal fields are not present in the supplied raw log, remove
+        # hallucinated hour/day/time predicates rather than storing a rule
+        # that claims evidence we do not have.
+        raw_evidence = (request.raw_log or "").lower()
+        unsupported_temporal_fields = {
+            "hour", "hours", "day", "days", "weekday", "timestamp",
+            "time", "event_time",
+        }
+        for name, selection in detection.items():
+            if name == "condition":
+                continue
+            if isinstance(selection, dict):
+                for field in list(selection):
+                    if field.lower() in unsupported_temporal_fields:
+                        field_present = field.lower() in raw_evidence
+                        if not field_present:
+                            selection.pop(field)
+
+        selection_names = [name for name in detection if name != "condition"]
+        if len(selection_names) == 1:
+            detection["condition"] = selection_names[0]
+
+        return yaml.safe_dump(document, sort_keys=False)
+    except Exception:
+        return rule_text
+
+
 def _validate_sigma_rule(rule_text: str) -> tuple[bool, str]:
     """Validate YAML and Sigma detection semantics before storing a rule."""
     try:
@@ -250,6 +302,7 @@ async def generate_sigma_rule(request: RuleGenerationRequest) -> Optional[str]:
 
     rule_text = await _ollama_generate(prompt)
     if rule_text:
+        rule_text = _normalize_generated_sigma(rule_text, request)
         rule_text = _ensure_sigma_condition(rule_text)
         valid, error = _validate_sigma_rule(rule_text)
         if valid:
@@ -275,6 +328,7 @@ async def generate_sigma_rule(request: RuleGenerationRequest) -> Optional[str]:
         ])
         repaired = await _ollama_generate(repair_prompt)
         if repaired:
+            repaired = _normalize_generated_sigma(repaired, request)
             repaired = _ensure_sigma_condition(repaired)
             valid, error = _validate_sigma_rule(repaired)
             if valid:
