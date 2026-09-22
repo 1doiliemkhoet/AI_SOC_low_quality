@@ -188,7 +188,7 @@ class DeploymentVerifier:
         # Test 3: Prediction endpoint
         try:
             payload = {
-                "features": [0.0] * 78,
+                "features": [0.0] * 77,
                 "model_name": "random_forest"
             }
             response = requests.post(
@@ -213,8 +213,8 @@ class DeploymentVerifier:
         # Test 4: Batch prediction endpoint
         try:
             payload = [
-                {"features": [0.0] * 78, "model_name": "random_forest"},
-                {"features": [1.0] * 78, "model_name": "xgboost"}
+                {"features": [0.0] * 77, "model_name": "random_forest"},
+                {"features": [1.0] * 77, "model_name": "xgboost"}
             ]
             response = requests.post(
                 f"{self.base_url}/predict/batch",
@@ -246,7 +246,7 @@ class DeploymentVerifier:
         # Test 1: Invalid model name
         try:
             payload = {
-                "features": [0.0] * 78,
+                "features": [0.0] * 77,
                 "model_name": "invalid_model"
             }
             response = requests.post(
@@ -266,7 +266,7 @@ class DeploymentVerifier:
         # Test 2: Wrong feature count
         try:
             payload = {
-                "features": [0.0] * 50,  # Should be 78
+                "features": [0.0] * 50,  # Should be 77
                 "model_name": "random_forest"
             }
             response = requests.post(
@@ -311,7 +311,7 @@ class DeploymentVerifier:
 
         try:
             payload = {
-                "features": [0.0] * 78,
+                "features": [0.0] * 77,
                 "model_name": "random_forest"
             }
 
