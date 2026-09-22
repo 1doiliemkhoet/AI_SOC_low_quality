@@ -128,8 +128,6 @@ def _clean_rule_text(rule_text: str) -> str:
 def _ensure_sigma_condition(rule_text: str) -> str:
     """Add an unambiguous condition when a rule has exactly one selection."""
     try:
-        raw_evidence = (request.raw_log or "").lower()
-        rule_text = _strip_unsupported_temporal_lines(rule_text, raw_evidence)
         document = yaml.safe_load(rule_text)
         if not isinstance(document, dict):
             return rule_text
@@ -156,10 +154,13 @@ def _strip_unsupported_temporal_lines(rule_text: str, raw_evidence: str) -> str:
     }
     lines = []
     for line in rule_text.splitlines():
-        match = re.match(r"^(?P<indent>\\s*)(?:-\\s*)?(?P<field>[A-Za-z_][A-Za-z0-9_-]*)\\s*:", line)
+        match = re.match(
+            r"^(?P<indent>\s*)(?:-\s*)?(?P<field>[A-Za-z_][A-Za-z0-9_-]*)\s*:",
+            line,
+        )
         if match and match.group("field").lower() in temporal_fields:
             field = match.group("field")
-            field_pattern = rf'(?i)(?:"{re.escape(field)}"\\s*[:=]|\\b{re.escape(field)}\\b\\s*[:=])'
+            field_pattern = rf'(?i)(?:"{re.escape(field)}"\s*[:=]|\b{re.escape(field)}\b\s*[:=])'
             if re.search(field_pattern, raw_evidence) is None:
                 continue
         lines.append(line)
@@ -169,6 +170,8 @@ def _strip_unsupported_temporal_lines(rule_text: str, raw_evidence: str) -> str:
 def _normalize_generated_sigma(rule_text: str, request: RuleGenerationRequest) -> str:
     """Normalize model output so stored Sigma stays aligned with supplied evidence."""
     try:
+        raw_evidence = (request.raw_log or "").lower()
+        rule_text = _strip_unsupported_temporal_lines(rule_text, raw_evidence)
         document = yaml.safe_load(rule_text)
         if not isinstance(document, dict):
             return rule_text
@@ -198,9 +201,8 @@ def _normalize_generated_sigma(rule_text: str, request: RuleGenerationRequest) -
         if not isinstance(detection, dict):
             return yaml.safe_dump(document, sort_keys=False)
 
-        # If temporal fields are not present in the supplied raw log, remove
-        # hallucinated hour/day/time predicates rather than storing a rule
-        # that claims evidence we do not have.
+        # Temporal fields that are not explicitly supported by structured
+        # evidence are removed before the rule is stored.
         unsupported_temporal_fields = {
             "hour", "hours", "day", "days", "weekday", "timestamp",
             "time", "event_time",
@@ -211,12 +213,8 @@ def _normalize_generated_sigma(rule_text: str, request: RuleGenerationRequest) -
             if isinstance(selection, dict):
                 for field in list(selection):
                     if field.lower() in unsupported_temporal_fields:
-                        # Treat a temporal field as supported only when the raw
-                        # evidence contains it as a structured field, not merely
-                        # as prose such as "non-business hours".
-                        field_pattern = rf'(?i)(?:"{re.escape(field)}"\\s*[:=]|\\b{re.escape(field)}\\b\\s*[:=])'
-                        field_present = re.search(field_pattern, raw_evidence) is not None
-                        if not field_present:
+                        field_pattern = rf'(?i)(?:"{re.escape(field)}"\s*[:=]|\b{re.escape(field)}\b\s*[:=])'
+                        if re.search(field_pattern, raw_evidence) is None:
                             selection.pop(field)
 
         selection_names = [name for name in detection if name != "condition"]
@@ -226,7 +224,6 @@ def _normalize_generated_sigma(rule_text: str, request: RuleGenerationRequest) -
         return yaml.safe_dump(document, sort_keys=False)
     except Exception:
         return rule_text
-
 
 def _validate_sigma_rule(rule_text: str) -> tuple[bool, str]:
     """Validate YAML and Sigma detection semantics before storing a rule."""
