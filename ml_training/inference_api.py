@@ -218,7 +218,7 @@ async def predict(flow: NetworkFlow):
     Predict intrusion detection for a network flow
 
     Args:
-        flow: NetworkFlow object with 78 features and optional model selection
+        flow: NetworkFlow object with 77 features and optional model selection
 
     Returns:
         PredictionResponse with prediction, confidence, and metadata

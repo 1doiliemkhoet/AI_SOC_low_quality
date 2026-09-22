@@ -109,7 +109,7 @@ class TestInferenceAPI:
     def test_predict_valid_request(self, client):
         """Test prediction with valid request"""
         # Create dummy features
-        features = [0.0] * 78
+        features = [0.0] * 77
 
         request_data = {
             "features": features,
@@ -135,7 +135,7 @@ class TestInferenceAPI:
 
     def test_predict_all_models(self, client):
         """Test prediction with all available models"""
-        features = [0.0] * 78
+        features = [0.0] * 77
 
         model_names = ["random_forest", "xgboost", "decision_tree"]
 
@@ -156,7 +156,7 @@ class TestInferenceAPI:
 
     def test_predict_invalid_model(self, client):
         """Test prediction with invalid model name"""
-        features = [0.0] * 78
+        features = [0.0] * 77
 
         request_data = {
             "features": features,
@@ -172,7 +172,7 @@ class TestInferenceAPI:
     def test_predict_wrong_feature_count(self, client):
         """Test prediction with wrong number of features"""
         # Wrong number of features
-        features = [0.0] * 50  # Should be 78
+        features = [0.0] * 50  # Should be 77
 
         request_data = {
             "features": features,
@@ -196,11 +196,11 @@ class TestInferenceAPI:
         """Test batch prediction with valid data"""
         flows = [
             {
-                "features": [0.0] * 78,
+                "features": [0.0] * 77,
                 "model_name": "random_forest"
             },
             {
-                "features": [1.0] * 78,
+                "features": [1.0] * 77,
                 "model_name": "xgboost"
             }
         ]
@@ -222,7 +222,7 @@ class TestInferenceAPI:
         # Exceed batch size limit of 1000
         flows = [
             {
-                "features": [0.0] * 78,
+                "features": [0.0] * 77,
                 "model_name": "random_forest"
             }
         ] * 1001
@@ -232,7 +232,7 @@ class TestInferenceAPI:
 
     def test_inference_latency(self, client):
         """Test inference latency meets requirements (<100ms)"""
-        features = [0.0] * 78
+        features = [0.0] * 77
 
         request_data = {
             "features": features,
@@ -262,7 +262,7 @@ class TestInferenceAPI:
 
     def test_prediction_consistency(self, client):
         """Test that same input produces same output"""
-        features = [0.5] * 78
+        features = [0.5] * 77
 
         request_data = {
             "features": features,
@@ -307,7 +307,7 @@ class TestInferenceAPI:
     def test_feature_names_count(self):
         """Test correct number of features"""
         assert feature_names is not None
-        assert len(feature_names) == 78, f"Expected 78 features, got {len(feature_names)}"
+        assert len(feature_names) == 77, f"Expected 77 features, got {len(feature_names)}"
 
 
 class TestDockerDeployment:
