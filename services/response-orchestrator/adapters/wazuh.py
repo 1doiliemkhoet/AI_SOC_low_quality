@@ -84,6 +84,52 @@ class WazuhAdapter(BaseAdapter):
             resp.raise_for_status()
             return resp.json()
 
+    @staticmethod
+    def _active_response_result(
+        result: Dict[str, Any],
+        action_type: str,
+        target: str,
+    ) -> Optional[AdapterResult]:
+        """Convert Wazuh business-level AR failures into an AdapterResult failure."""
+        data = result.get("data") or {}
+        failed = data.get("failed_items") or []
+        affected = data.get("affected_items") or []
+        error_code = result.get("error", 0)
+
+        if error_code or data.get("total_failed_items", 0) > 0 or not affected:
+            detail = (
+                f"Wazuh Active Response rejected or did not execute "
+                f"{action_type} on {target}: "
+                f"error={error_code}, affected={affected}, failed={failed}"
+            )
+            return AdapterResult(
+                success=False,
+                action_type=action_type,
+                target=target,
+                adapter="wazuh",
+                detail=detail,
+                error=detail,
+                raw_response=result,
+                rollback_capable=False,
+            )
+        return None
+
+    async def _resolve_target_agents(self, agent_list: list[str]) -> list[str]:
+        """Resolve 'all' to active endpoint agents, excluding the manager (000)."""
+        if agent_list != ["all"]:
+            return agent_list
+
+        result = await self._api_call(
+            "GET",
+            "/agents?status=active&select=id",
+        )
+        agents = [
+            item.get("id")
+            for item in (result.get("data") or {}).get("affected_items", [])
+            if item.get("id") and item.get("id") != "000"
+        ]
+        return agents
+
     # ----- Execute -----
 
     async def execute(
@@ -136,8 +182,22 @@ class WazuhAdapter(BaseAdapter):
 
     async def _execute_block_ip(self, target: str, params: Dict) -> AdapterResult:
         """Block an IP using Wazuh Active Response firewall-drop."""
-        # Find agents that should apply the block
-        agent_list = params.get("agent_list", ["all"])
+        # Exclude the manager (000) from endpoint enforcement when "all" is requested.
+        agent_list = await self._resolve_target_agents(
+            params.get("agent_list", ["all"])
+        )
+
+        if not agent_list:
+            detail = f"No active Wazuh endpoint agents available for block_ip on {target}"
+            return AdapterResult(
+                success=False,
+                action_type="block_ip",
+                target=target,
+                adapter=self.name,
+                detail=detail,
+                error=detail,
+                rollback_capable=False,
+            )
 
         body = {
             "command": "!firewall-drop",
@@ -149,17 +209,16 @@ class WazuhAdapter(BaseAdapter):
             },
         }
 
-        # Use all agents by default; only send agents_list for specific agent IDs
-        if agent_list == ["all"]:
-            endpoint = "/active-response"
-        else:
-            endpoint = f"/active-response?agents_list={','.join(agent_list)}"
-
+        endpoint = f"/active-response?agents_list={','.join(agent_list)}&wait_for_complete=true"
         result = await self._api_call(
             "PUT",
             endpoint,
             json_body=body,
         )
+
+        failure = self._active_response_result(result, "block_ip", target)
+        if failure:
+            return failure
 
         return AdapterResult(
             success=True,
@@ -358,35 +417,22 @@ class WazuhAdapter(BaseAdapter):
     ) -> AdapterResult:
         """Reverse a Wazuh action."""
         if action_type == "block_ip":
-            body = {
-                "command": "!firewall-drop",
-                "alert": {
-                    "data": {"srcip": target},
-                },
-                "agents_list": params.get("agent_list", ["all"]) if params else ["all"],
-            }
-            # Wazuh stateful AR auto-reverses, but we can force it
-            try:
-                result = await self._api_call(
-                    "PUT", "/active-response", json_body=body
-                )
-                return AdapterResult(
-                    success=True,
-                    action_type=action_type,
-                    target=target,
-                    adapter=self.name,
-                    detail=f"Rolled back: IP {target} unblocked",
-                    raw_response=result,
-                )
-            except Exception as e:
-                return AdapterResult(
-                    success=False,
-                    action_type=action_type,
-                    target=target,
-                    adapter=self.name,
-                    detail=f"Rollback failed for block on {target}",
-                    error=str(e),
-                )
+            # Wazuh Server API dispatches an add-style execution for !firewall-drop.
+            # It does not provide a supported API operation for forcing the script's
+            # stateful delete action, so never claim rollback succeeded.
+            detail = (
+                f"Wazuh API cannot force-delete firewall-drop state for {target}. "
+                "Use a stateful Active Response timeout or an agent-side delete mechanism."
+            )
+            return AdapterResult(
+                success=False,
+                action_type=action_type,
+                target=target,
+                adapter=self.name,
+                detail=detail,
+                error=detail,
+                rollback_capable=False,
+            )
 
         if action_type == "isolate_host":
             return AdapterResult(

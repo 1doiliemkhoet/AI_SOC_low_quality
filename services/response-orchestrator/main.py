@@ -11,13 +11,15 @@ intelligence into action.
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.responses import JSONResponse
-from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import CollectorRegistry, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client.multiprocess import MultiProcessCollector
 from starlette.responses import Response
 
 from config import get_settings
@@ -47,29 +49,7 @@ logger = logging.getLogger(__name__)
 # Prometheus Metrics
 # ---------------------------------------------------------------------------
 
-PLANS_TRIGGERED = Counter(
-    "defense_plans_triggered_total",
-    "Total defense plans triggered",
-    ["status"],
-)
-PLANS_COMPLETED = Counter(
-    "defense_plans_completed_total",
-    "Total defense plans completed",
-    ["verification_result"],
-)
-ACTIONS_EXECUTED = Counter(
-    "defense_actions_executed_total",
-    "Total defense actions executed",
-    ["action_type", "adapter", "result"],
-)
-PLAN_DURATION = Histogram(
-    "defense_plan_duration_seconds",
-    "Time from plan trigger to completion",
-)
-APPROVAL_LATENCY = Histogram(
-    "defense_approval_latency_seconds",
-    "Time actions spend waiting for human approval",
-)
+from metrics import PLANS_TRIGGERED
 
 # ---------------------------------------------------------------------------
 # Orchestrator instance
@@ -185,8 +165,9 @@ async def health_check():
 
     active_plans = 0
     if orchestrator:
+        plans = await orchestrator.get_all_plans(limit=200)
         active_plans = len([
-            p for p in orchestrator.get_all_plans()
+            p for p in plans
             if p.status not in (PlanStatus.COMPLETED, PlanStatus.FAILED, PlanStatus.ROLLED_BACK)
         ])
 
@@ -272,7 +253,7 @@ async def list_plans(
     if not orchestrator:
         raise HTTPException(status_code=503, detail="Orchestrator not initialized")
 
-    plans = orchestrator.get_all_plans(status=status_filter, limit=limit)
+    plans = await orchestrator.get_all_plans(status=status_filter, limit=limit)
     return [
         PlanSummary(
             plan_id=p.plan_id,
@@ -304,7 +285,7 @@ async def get_plan(plan_id: str):
     if not orchestrator:
         raise HTTPException(status_code=503, detail="Orchestrator not initialized")
 
-    plan = orchestrator.get_plan(plan_id)
+    plan = await orchestrator.get_plan(plan_id)
     if not plan:
         raise HTTPException(status_code=404, detail=f"Plan {plan_id} not found")
     return plan
@@ -328,7 +309,7 @@ async def list_pending_approvals():
     """
     if not orchestrator:
         raise HTTPException(status_code=503, detail="Orchestrator not initialized")
-    return orchestrator.get_pending_approvals()
+    return await orchestrator.get_pending_approvals()
 
 
 @app.post(
@@ -426,8 +407,15 @@ async def d3fend_supported_techniques():
 @app.get("/metrics", tags=["Monitoring"])
 async def prometheus_metrics():
     """Prometheus metrics endpoint."""
+    if os.getenv("PROMETHEUS_MULTIPROC_DIR"):
+        registry = CollectorRegistry()
+        MultiProcessCollector(registry)
+        content = generate_latest(registry)
+    else:
+        content = generate_latest()
+
     return Response(
-        content=generate_latest(),
+        content=content,
         media_type=CONTENT_TYPE_LATEST,
     )
 

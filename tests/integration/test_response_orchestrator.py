@@ -28,6 +28,53 @@ sys.path.insert(
 )
 
 
+
+# Response-orchestrator uses bare module imports while other services expose
+# modules with the same names. Isolate those modules per test so the suite does
+# not depend on collection or execution order.
+_RESPONSE_MODULES = {
+    "models",
+    "config",
+    "database",
+    "d3fend",
+    "safety",
+    "planner",
+    "orchestrator",
+    "verification",
+    "adapters",
+}
+
+
+@pytest.fixture(autouse=True)
+def isolate_response_orchestrator_modules():
+    response_prefixes = tuple(f"{name}." for name in _RESPONSE_MODULES)
+    previous_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if name in _RESPONSE_MODULES or name.startswith(response_prefixes)
+    }
+    original_sys_path = list(sys.path)
+
+    for name in list(sys.modules):
+        if name in _RESPONSE_MODULES or name.startswith(response_prefixes):
+            sys.modules.pop(name, None)
+
+    response_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "..", "services", "response-orchestrator",
+    )
+    sys.path.insert(0, response_path)
+
+    try:
+        yield
+    finally:
+        for name in list(sys.modules):
+            if name in _RESPONSE_MODULES or name.startswith(response_prefixes):
+                sys.modules.pop(name, None)
+        sys.modules.update(previous_modules)
+        sys.path[:] = original_sys_path
+
+
 # ============================================================================
 # D3FEND Integration Tests
 # ============================================================================
@@ -590,6 +637,71 @@ class TestOrchestratorE2E:
                 assert action.status in (ActionStatus.COMPLETED, ActionStatus.FAILED)
 
     @pytest.mark.asyncio
+    async def test_duplicate_approval_claim_is_rejected(self):
+        from orchestrator import ResponseOrchestrator
+        from models import (
+            DefensePlan, PlannedAction, ActionType, AdapterType,
+            ActionStatus, ApprovalTier, PlanStatus,
+        )
+
+        settings = self._make_settings()
+        orch = ResponseOrchestrator(settings)
+
+        now = datetime.utcnow()
+        action = PlannedAction(
+            action_id="ACT-DUPLICATE",
+            action_type=ActionType.BLOCK_IP,
+            target="203.0.113.42",
+            adapter=AdapterType.FIREWALL,
+            confidence=0.9,
+            impact_score=0.8,
+            safety_score=0.8,
+            composite_score=0.82,
+            blast_radius="low",
+            approval_tier=ApprovalTier.HUMAN_REQUIRED,
+            requires_approval=True,
+            d3fend_technique="d3f:InboundTrafficFiltering",
+            d3fend_label="Inbound Traffic Filtering",
+            counters_techniques=["T1110"],
+            status=ActionStatus.PENDING,
+            rationale="Block brute-force source",
+        )
+        plan = DefensePlan(
+            plan_id="PLAN-DUPLICATE",
+            incident_id="INC-DUPLICATE",
+            status=PlanStatus.AWAITING_APPROVAL,
+            created_at=now,
+            updated_at=now,
+            incident_summary="Duplicate approval test",
+            detected_techniques=["T1110"],
+            actions=[action],
+            total_actions=1,
+            dry_run=True,
+        )
+        orch._plans[plan.plan_id] = plan
+
+        await orch._claim_approval_action(
+            plan_id=plan.plan_id,
+            action_id=action.action_id,
+            approved=True,
+            analyst_id="analyst-a",
+            notes="first approval",
+        )
+
+        with pytest.raises(ValueError, match="not pending"):
+            await orch._claim_approval_action(
+                plan_id=plan.plan_id,
+                action_id=action.action_id,
+                approved=True,
+                analyst_id="analyst-b",
+                notes="duplicate approval",
+            )
+
+        assert action.status == ActionStatus.EXECUTING
+        assert action.approved_by == "analyst-a"
+        assert action.approval_notes == "first approval"
+
+    @pytest.mark.asyncio
     async def test_get_pending_approvals(self):
         from orchestrator import ResponseOrchestrator
         from models import PlanStatus
@@ -625,9 +737,71 @@ class TestOrchestratorE2E:
             )
 
             # Get all pending approvals
-            all_pending = orch.get_pending_approvals()
+            all_pending = await orch.get_pending_approvals()
             assert isinstance(all_pending, list)
             for item in all_pending:
                 assert "action_id" in item
                 assert "action_type" in item
                 assert "rationale" in item
+
+
+class TestVerificationFailClosed:
+    """Test fail-closed verification behavior when monitoring is unavailable."""
+
+    @pytest.mark.asyncio
+    async def test_wazuh_monitoring_failure_fails_verification(self):
+        from verification import VerificationEngine
+        from models import DefensePlan, PlanStatus
+
+        settings = TestOrchestratorE2E()._make_settings()
+        engine = VerificationEngine(
+            simulation_url=settings.simulation_url,
+            correlation_url=settings.correlation_engine_url,
+            wazuh_api_url=settings.wazuh_api_url,
+            wazuh_username=settings.wazuh_api_username,
+            wazuh_password=settings.wazuh_api_password,
+            wazuh_verify_ssl=settings.wazuh_api_verify_ssl,
+            risk_reduction_threshold=0.30,
+            monitoring_duration_seconds=1,
+        )
+
+        now = datetime.utcnow()
+        plan = DefensePlan(
+            plan_id="PLAN-VERIFY-FAIL-CLOSED",
+            incident_id="INC-VERIFY-FAIL-CLOSED",
+            status=PlanStatus.VERIFYING,
+            created_at=now,
+            updated_at=now,
+            incident_summary="Monitoring failure test",
+            detected_techniques=["T1110"],
+            pre_defense_risk=0.8,
+            actions=[],
+            total_actions=0,
+            dry_run=True,
+        )
+
+        with patch.object(
+            engine,
+            "_track_resimulation",
+            new_callable=AsyncMock,
+            return_value={
+                "simulation_id": "SIM-VERIFY",
+                "pre_success_rate": 0.8,
+                "post_success_rate": 0.4,
+            },
+        ), patch.object(
+            engine,
+            "_track_monitoring",
+            new_callable=AsyncMock,
+            return_value={
+                "continued_indicators": False,
+                "new_alerts": 0,
+                "duration": 0,
+                "monitoring_error": "Indexer unavailable",
+            },
+        ):
+            result = await engine.verify_plan(plan)
+
+        assert result.verification_passed is False
+        assert "monitoring was unavailable" in result.verdict_reason.lower()
+        assert "not treated as evidence" in result.verdict_reason.lower()

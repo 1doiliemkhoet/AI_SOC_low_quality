@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     wazuh_api_password: str = ""
     wazuh_api_verify_ssl: bool = False
 
+    # Wazuh Indexer (OpenSearch alert source for verification)
+    wazuh_indexer_url: str = "https://wazuh-indexer:9200"
+    wazuh_indexer_username: str = "admin"
+    wazuh_indexer_password: str = "admin"
+    wazuh_indexer_verify_ssl: bool = False
+
     # Simulation Integration
     simulation_swarm_size: int = 50
     simulation_monte_carlo_runs: int = 3

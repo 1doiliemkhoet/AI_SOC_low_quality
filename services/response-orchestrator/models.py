@@ -121,6 +121,14 @@ class PlannedAction(BaseModel):
     adapter_response: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
 
+    # Approval audit
+    approved_by: Optional[str] = Field(
+        None, description="Analyst who approved or vetoed the action"
+    )
+    approval_notes: Optional[str] = Field(
+        None, description="Analyst notes attached to the approval decision"
+    )
+
     class Config:
         json_schema_extra = {
             "example": {
