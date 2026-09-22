@@ -737,7 +737,7 @@ class TestOrchestratorE2E:
             )
 
             # Get all pending approvals
-            all_pending = orch.get_pending_approvals()
+            all_pending = await orch.get_pending_approvals()
             assert isinstance(all_pending, list)
             for item in all_pending:
                 assert "action_id" in item
