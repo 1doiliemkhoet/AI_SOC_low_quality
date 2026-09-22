@@ -2,10 +2,24 @@
 Unit tests for FeedbackSubmission validation.
 """
 
+import importlib.util
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
-from models import FeedbackSubmission
+
+MODEL_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "services"
+    / "feedback-service"
+    / "models.py"
+)
+SPEC = importlib.util.spec_from_file_location("feedback_service_models", MODEL_PATH)
+MODULE = importlib.util.module_from_spec(SPEC)
+assert SPEC.loader is not None
+SPEC.loader.exec_module(MODULE)
+FeedbackSubmission = MODULE.FeedbackSubmission
 
 
 def test_valid_attack_feedback():
