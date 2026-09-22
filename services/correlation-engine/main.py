@@ -553,12 +553,6 @@ async def run_simulation(
     timesteps: int = Query(3, ge=1, le=10),
     environment_json: Optional[Dict] = None,
 ):
-    if not await SIMULATION_COORDINATOR.try_acquire():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A simulation is already running. Try again after it completes.",
-        )
-
     """
     Run an attack campaign simulation against the infrastructure environment.
 
@@ -569,6 +563,11 @@ async def run_simulation(
 
     Default: 4 archetypes (opportunist, apt, ransomware, insider) x 3 timesteps.
     """
+    if not await SIMULATION_COORDINATOR.try_acquire():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A simulation is already running. Try again after it completes.",
+        )
     config = SimulationConfig(
         agent_archetypes=archetypes or ["opportunist", "apt", "ransomware", "insider"],
         timesteps=timesteps,
@@ -909,12 +908,6 @@ async def generate_dataset(
     timesteps: int = Query(3, ge=1, le=10, description="Timesteps per run"),
     environment_json: Optional[Dict] = None,
 ):
-    if not await SIMULATION_COORDINATOR.try_acquire():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A simulation is already running. Try again after it completes.",
-        )
-
     """
     Run N simulations with randomized environments and collect all traces into
     a structured dataset.
@@ -925,6 +918,11 @@ async def generate_dataset(
     Note: This is a long-running endpoint. For large runs (>50) consider running
     dataset_generator.py directly via the CLI.
     """
+    if not await SIMULATION_COORDINATOR.try_acquire():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A simulation is already running. Try again after it completes.",
+        )
     try:
         # Load base environment
         if environment_json:
@@ -994,12 +992,6 @@ async def start_swarm_simulation(
     defenders_enabled: bool = Query(True),
     environment_json: Optional[Dict] = None,
 ):
-    if not await SIMULATION_COORDINATOR.try_acquire():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A simulation is already running. Try again after it completes.",
-        )
-
     """
     Start a swarm simulation in the background.
 
@@ -1009,6 +1001,11 @@ async def start_swarm_simulation(
     Spawns N follower agents per archetype across M Monte Carlo batches.
     Leaders use LLM decisions; followers replay with randomized parameters.
     """
+    if not await SIMULATION_COORDINATOR.try_acquire():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A simulation is already running. Try again after it completes.",
+        )
     env = None
     try:
         # Load environment
@@ -1080,6 +1077,17 @@ async def start_swarm_simulation(
 
         # Launch as background task
         task = asyncio.create_task(_run_swarm())
+    except HTTPException:
+        SIMULATION_COORDINATOR.release()
+        raise
+    except Exception as exc:
+        SIMULATION_COORDINATOR.release()
+        logger.error("Failed to start swarm simulation: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start swarm simulation: {exc}",
+        )
+
     swarm_id = f"SWARM-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
     tasks = getattr(app.state, "swarm_tasks", {})
     tasks[swarm_id] = {"task": task, "simulator": simulator}
