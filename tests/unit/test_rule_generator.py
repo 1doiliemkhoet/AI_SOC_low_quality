@@ -192,3 +192,39 @@ def test_is_false_positive_alert_requires_explicit_true_feedback():
     }) is True
 
     assert _is_false_positive_alert({"feedback_count": 1, "feedback": []}) is False
+
+
+def test_normalize_generated_sigma_merges_split_selection_fields_and_removes_dayofweek():
+    from main import RuleGenerationRequest, _normalize_generated_sigma, _validate_sigma_rule
+
+    request = RuleGenerationRequest(
+        alert_id="test-alert-3",
+        alert_description="Successful login.",
+        raw_log="Successful login from 192.168.100.140 using user kali",
+        mitre_techniques=["T1078"],
+        severity="high",
+    )
+    rule = """---
+title: Split Selection
+status: experimental
+logsource:
+  category: authentication
+detection:
+  selection:
+    - user: kali
+    - event_type: login
+    - dayofweek: 0-6
+  condition: selection
+falsepositives:
+  - Expected administrative activity
+level: high
+tags:
+  - attack.T1078
+"""
+    normalized = _normalize_generated_sigma(rule, request)
+    valid, error = _validate_sigma_rule(normalized)
+    assert valid, error
+    assert "    user: kali" in normalized
+    assert "    event_type: login" in normalized
+    assert "dayofweek:" not in normalized
+    assert "- user:" not in normalized
