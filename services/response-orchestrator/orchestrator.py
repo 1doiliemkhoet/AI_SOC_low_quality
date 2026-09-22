@@ -19,7 +19,7 @@ The orchestrator coordinates between:
 import asyncio
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 
@@ -868,7 +868,7 @@ class ResponseOrchestrator:
 
         APPROVAL_LATENCY.observe(
             max(
-                (datetime.utcnow() - approval_started_at).total_seconds(),
+                (datetime.now(timezone.utc) - approval_started_at).total_seconds(),
                 0.0,
             )
         )
