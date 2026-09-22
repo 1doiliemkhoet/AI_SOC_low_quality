@@ -263,6 +263,10 @@ class WazuhAdapter(BaseAdapter):
 
         result = await self._api_call("PUT", "/active-response", json_body=body)
 
+        failure = self._active_response_result(result, "isolate_host", target)
+        if failure:
+            return failure
+
         return AdapterResult(
             success=True,
             action_type="isolate_host",
@@ -310,25 +314,34 @@ class WazuhAdapter(BaseAdapter):
 
     async def _execute_add_monitoring(self, target: str, params: Dict) -> AdapterResult:
         """Add enhanced monitoring rules for a specific host."""
-        # Add host to high-priority monitoring group
+        detail = (
+            "Wazuh integration does not implement add_monitoring yet; "
+            "no monitoring configuration was changed."
+        )
         return AdapterResult(
-            success=True,
+            success=False,
             action_type="add_monitoring",
             target=target,
             adapter=self.name,
-            detail=f"Enhanced monitoring enabled for {target}: "
-                   f"FIM, rootcheck, and log analysis active",
+            detail=detail,
+            error="Action not implemented",
+            rollback_capable=False,
         )
 
     async def _execute_deploy_sigma_rule(self, target: str, params: Dict) -> AdapterResult:
         """Deploy a Sigma detection rule via the rule-generator service."""
-        rule_content = params.get("rule_content", "")
+        detail = (
+            "Wazuh integration does not implement Sigma deployment yet; "
+            "the generated rule was not installed into Wazuh."
+        )
         return AdapterResult(
-            success=True,
+            success=False,
             action_type="deploy_sigma_rule",
             target=target,
             adapter=self.name,
-            detail=f"Sigma rule deployed for pattern detection on {target}",
+            detail=detail,
+            error="Action not implemented",
+            rollback_capable=False,
         )
 
     async def _execute_kill_process(self, target: str, params: Dict) -> AdapterResult:
@@ -350,6 +363,10 @@ class WazuhAdapter(BaseAdapter):
 
         result = await self._api_call("PUT", "/active-response", json_body=body)
 
+        failure = self._active_response_result(result, "kill_process", target)
+        if failure:
+            return failure
+
         return AdapterResult(
             success=True,
             action_type="kill_process",
@@ -362,13 +379,17 @@ class WazuhAdapter(BaseAdapter):
     async def _execute_patch_vulnerability(self, target: str, params: Dict) -> AdapterResult:
         """Trigger vulnerability patching via Wazuh SCA/package update."""
         cve_id = params.get("cve_id", "unknown")
+        detail = (
+            f"Patch execution for {cve_id} on {target} is not implemented by "
+            "the Wazuh adapter; no package update was performed."
+        )
         return AdapterResult(
-            success=True,
+            success=False,
             action_type="patch_vulnerability",
             target=target,
             adapter=self.name,
-            detail=f"Patch request queued for {cve_id} on {target}. "
-                   f"Requires manual verification — patching is not atomic.",
+            detail=detail,
+            error="Action not implemented",
             rollback_capable=False,
         )
 
@@ -384,6 +405,19 @@ class WazuhAdapter(BaseAdapter):
                 result = await self._api_call(
                     "GET", f"/active-response?search={target}"
                 )
+                data = result.get("data") or {}
+                affected = data.get("affected_items") or []
+                if not affected:
+                    detail = f"Cannot verify block for {target}: no active response entry found"
+                    return AdapterResult(
+                        success=False,
+                        action_type=action_type,
+                        target=target,
+                        adapter=self.name,
+                        detail=detail,
+                        error=detail,
+                        raw_response=result,
+                    )
                 return AdapterResult(
                     success=True,
                     action_type=action_type,
@@ -402,12 +436,18 @@ class WazuhAdapter(BaseAdapter):
                     error=str(e),
                 )
 
+        detail = (
+            f"Verification is not implemented for {action_type} on {target}; "
+            "the adapter will not claim the action is active without evidence."
+        )
         return AdapterResult(
-            success=True,
+            success=False,
             action_type=action_type,
             target=target,
             adapter=self.name,
-            detail=f"Verification assumed for {action_type} on {target}",
+            detail=detail,
+            error="Verification not implemented",
+            rollback_capable=False,
         )
 
     # ----- Rollback -----
