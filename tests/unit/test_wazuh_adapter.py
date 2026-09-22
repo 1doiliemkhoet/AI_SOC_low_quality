@@ -122,3 +122,53 @@ async def test_unsupported_verification_fails_closed():
 
     assert not result.success
     assert result.error == "Verification not implemented"
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "target"),
+    [
+        ("block_ip", "not-an-ip"),
+        ("block_ip", "0.0.0.0"),
+        ("block_ip", "224.0.0.1"),
+        ("block_ip", "255.255.255.255"),
+        ("isolate_host", "0.0.0.0"),
+        ("kill_process", "not-an-ip"),
+    ],
+)
+async def test_ip_based_actions_reject_unsafe_targets(action, target):
+    adapter = make_adapter()
+    adapter._api_call = AsyncMock()
+    result = await adapter.execute(action, target, {"agent_id": "001", "process_name": "bad.exe"})
+    assert not result.success
+    adapter._api_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_block_ip_verification_rejects_unsafe_target_without_api_call():
+    adapter = make_adapter()
+    adapter._api_call = AsyncMock()
+    result = await adapter.verify("block_ip", "0.0.0.0")
+    assert not result.success
+    adapter._api_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_process_action_requires_explicit_process_name():
+    adapter = make_adapter()
+    adapter._api_call = AsyncMock()
+    result = await adapter.execute("kill_process", "10.0.0.10", {"agent_id": "001"})
+    assert not result.success
+    assert result.error == "Missing process_name"
+    adapter._api_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_process_action_rejects_unknown_process_name():
+    adapter = make_adapter()
+    adapter._api_call = AsyncMock()
+    result = await adapter.execute(
+        "kill_process", "10.0.0.10", {"agent_id": "001", "process_name": "unknown"}
+    )
+    assert not result.success
+    assert result.error == "Missing process_name"
+    adapter._api_call.assert_not_awaited()
