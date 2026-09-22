@@ -97,7 +97,7 @@ The rule must be in valid Sigma YAML format. Include:
 - description: What the rule detects
 - logsource: category, product, service
 - detection: one or more named selections; each selection MUST be a YAML mapping of log field names to values (for example 'selection: {{user: kali, event_type: login}}'). Do NOT use expressions such as 'field == value' and do NOT make selection a list of strings.
-- condition: MUST reference only named detection selections that actually exist (for example 'condition: selection' or 'condition: selection and filter' when a filter selection is also defined); never use values such as 'any' by themselves.
+- condition: MUST reference only named detection selections that actually exist. Prefer the simple form 'condition: selection'. Use 'selection and filter' only when a separate filter selection is actually defined; never use values such as 'any' by themselves.
 - falsepositives: Known false positive scenarios
 - level: {severity}
 - tags: MITRE ATT&CK tags using the 'attack.<technique_id>' namespace, for example 'attack.t1078'
@@ -117,13 +117,10 @@ Generate ONLY the Sigma YAML rule. No explanation, no markdown fencing. Just the
 def _clean_rule_text(rule_text: str) -> str:
     """Remove optional Markdown code fences around an LLM-generated rule."""
     rule_text = (rule_text or "").strip()
-    if rule_text.startswith("```"):
-        lines = rule_text.splitlines()
-        if lines and lines[0].strip().startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        rule_text = "\n".join(lines).strip()
+    # Models may wrap YAML in Markdown fences, sometimes with leading text.
+    fenced = re.search(r"```(?:ya?ml)?\s*\n?(.*?)```", rule_text, flags=re.IGNORECASE | re.DOTALL)
+    if fenced:
+        return fenced.group(1).strip()
     return rule_text
 
 
