@@ -48,6 +48,7 @@ class VerificationEngine:
         wazuh_indexer_verify_ssl: bool = False,
         risk_reduction_threshold: float = 0.30,
         monitoring_duration_seconds: int = 1800,
+        simulation_timeout_seconds: int = 300,
     ):
         self.simulation_url = simulation_url
         self.correlation_url = correlation_url
@@ -61,6 +62,7 @@ class VerificationEngine:
         self.wazuh_indexer_verify_ssl = wazuh_indexer_verify_ssl
         self.risk_reduction_threshold = risk_reduction_threshold
         self.monitoring_duration_seconds = monitoring_duration_seconds
+        self.simulation_timeout_seconds = simulation_timeout_seconds
 
     async def verify_plan(
         self,
@@ -75,13 +77,12 @@ class VerificationEngine:
         """
         logger.info(f"Starting verification for plan {plan.plan_id}")
 
-        # Track 1: Re-simulation
-        resim_result = await self._track_resimulation(
-            plan, updated_environment
+        # Run both verification tracks concurrently so monitoring can overlap
+        # with the potentially long-running re-simulation.
+        resim_result, monitor_result = await asyncio.gather(
+            self._track_resimulation(plan, updated_environment),
+            self._track_monitoring(plan),
         )
-
-        # Track 2: Monitoring (with timeout)
-        monitor_result = await self._track_monitoring(plan)
 
         # Combine results
         pre_rate = resim_result.get("pre_success_rate", plan.pre_defense_risk or 0.5)
@@ -95,9 +96,13 @@ class VerificationEngine:
         continued = monitor_result.get("continued_indicators", False)
         new_alerts = monitor_result.get("new_alerts", 0)
         monitoring_error = monitor_result.get("monitoring_error")
+        resimulation_error = resim_result.get("resimulation_error")
 
-        # Verdict logic
-        sim_passed = reduction_pct >= self.risk_reduction_threshold
+        # A missing/failed re-simulation is not evidence of risk reduction.
+        sim_passed = (
+            not resimulation_error
+            and reduction_pct >= self.risk_reduction_threshold
+        )
         monitor_passed = not continued and not monitoring_error
 
         if sim_passed and monitor_passed:
@@ -107,6 +112,21 @@ class VerificationEngine:
                 f"{reduction_pct*100:.1f}% (from {pre_rate*100:.1f}% to "
                 f"{post_rate*100:.1f}%). No continued attack indicators "
                 f"detected in {self.monitoring_duration_seconds}s monitoring window."
+            )
+        elif resimulation_error and monitoring_error:
+            passed = False
+            reason = (
+                f"Verification FAILED. Re-simulation was unavailable: "
+                f"{resimulation_error}. Wazuh monitoring was also unavailable: "
+                f"{monitoring_error}. Neither failure is treated as evidence "
+                "that the threat was neutralized."
+            )
+        elif resimulation_error:
+            passed = False
+            reason = (
+                f"Verification FAILED. Re-simulation was unavailable: "
+                f"{resimulation_error}. A missing re-simulation result is not "
+                "treated as evidence of risk reduction."
             )
         elif monitoring_error:
             passed = False
@@ -187,7 +207,7 @@ class VerificationEngine:
                     url,
                     params=params,
                     json=updated_environment,
-                    timeout=120.0,
+                    timeout=self.simulation_timeout_seconds,
                 )
 
                 if resp.status_code == 200:
@@ -202,23 +222,22 @@ class VerificationEngine:
                         "post_success_rate": post_rate,
                     }
 
-                logger.warning(
-                    f"Re-simulation returned {resp.status_code}"
-                )
+                detail = f"Re-simulation returned HTTP {resp.status_code}"
+                logger.warning(detail)
+                return {
+                    "simulation_id": None,
+                    "pre_success_rate": plan.pre_defense_risk or 0.5,
+                    "post_success_rate": plan.pre_defense_risk or 0.5,
+                    "resimulation_error": detail,
+                }
         except Exception as e:
             logger.error(f"Re-simulation failed: {e}")
-
-        # Fallback: estimate based on action count
-        estimated_reduction = min(
-            len([a for a in plan.actions if a.status.value == "completed"]) * 0.1,
-            0.5,
-        )
-        pre = plan.pre_defense_risk or 0.5
-        return {
-            "simulation_id": None,
-            "pre_success_rate": pre,
-            "post_success_rate": max(pre - estimated_reduction, 0.0),
-        }
+            return {
+                "simulation_id": None,
+                "pre_success_rate": plan.pre_defense_risk or 0.5,
+                "post_success_rate": plan.pre_defense_risk or 0.5,
+                "resimulation_error": f"Re-simulation failed: {e}",
+            }
 
     # ----- Track 2: Monitoring -----
 
