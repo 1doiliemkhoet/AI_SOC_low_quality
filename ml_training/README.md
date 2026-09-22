@@ -98,7 +98,7 @@ PREPROCESSING
 3. Replacing infinite values... ✓ Replaced 1,234 infinite values
 4. Processing labels... ✓ Binary classification (BENIGN vs ATTACK)
 5. Encoding labels... ✓ Encoded 2 classes
-6. Scaling features... ✓ Scaled 78 features
+6. Scaling features... ✓ Scaled 77 features
 
 TRAINING: RANDOM FOREST
 Training on 1,680,651 samples... ✓ Completed in 127.45s
@@ -142,7 +142,7 @@ curl http://localhost:8000/models
 curl -X POST http://localhost:8000/predict \
   -H "Content-Type: application/json" \
   -d '{
-    "features": [0.0, 0.0, ...],  # 78 features
+    "features": [0.0, 0.0, ...],  # 77 features
     "model_name": "random_forest"
   }'
 ```
@@ -182,7 +182,7 @@ curl -X POST http://localhost:8000/predict/batch \
 
 ## Feature Engineering
 
-The pipeline uses 78 network flow features extracted from the CICIDS2017 dataset:
+The pipeline uses 77 network flow features extracted from the CICIDS2017 dataset:
 
 **Dropped Features (Non-Predictive):**
 - Flow ID
@@ -192,7 +192,7 @@ The pipeline uses 78 network flow features extracted from the CICIDS2017 dataset
 - Destination Port
 - Timestamp
 
-**Used Features (78 total):**
+**Used Features (77 total):**
 - Flow duration and timing statistics
 - Packet length statistics (fwd/bwd)
 - Flow IAT (Inter-Arrival Time) statistics
@@ -444,7 +444,7 @@ spec:
 
 ### Training Performance
 - **Dataset Size:** 2,100,814 records
-- **Feature Count:** 78 features
+- **Feature Count:** 77 features
 - **Training Time:** 5-15 minutes
 - **Memory Usage:** ~8-12 GB RAM
 
