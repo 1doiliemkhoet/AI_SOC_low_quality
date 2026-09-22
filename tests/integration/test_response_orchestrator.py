@@ -805,3 +805,56 @@ class TestVerificationFailClosed:
         assert result.verification_passed is False
         assert "monitoring was unavailable" in result.verdict_reason.lower()
         assert "not treated as evidence" in result.verdict_reason.lower()
+
+    @pytest.mark.asyncio
+    async def test_wazuh_attack_indicator_is_detected(self):
+        from verification import VerificationEngine
+        from models import DefensePlan
+
+        engine = VerificationEngine(monitoring_duration_seconds=0)
+
+        alert = {
+            "data": {"srcip": "203.0.113.99"},
+            "rule": {
+                "groups": ["sshd", "authentication_failed"],
+                "mitre": {"id": ["T1110"]},
+            },
+        }
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "hits": {
+                        "hits": [
+                            {"_source": alert},
+                        ]
+                    }
+                }
+
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def post(self, *args, **kwargs):
+                return FakeResponse()
+
+        plan = DefensePlan(
+            plan_id="PLAN-VERIFY-POSITIVE",
+            incident_id="INC-VERIFY-POSITIVE",
+            source_ips=["203.0.113.99"],
+            detected_techniques=["T1110"],
+        )
+
+        with patch("verification.httpx.AsyncClient", return_value=FakeClient()):
+            result = await engine._track_monitoring(plan)
+
+        assert result["continued_indicators"] is True
+        assert result["new_alerts"] == 1
+        assert result["alerts"][0]["data"]["srcip"] == "203.0.113.99"
+
