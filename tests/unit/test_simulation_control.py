@@ -1,8 +1,13 @@
-import asyncio
+import sys
+from pathlib import Path
 
 import pytest
 
-from services.correlation_engine.simulation_control import SimulationCoordinator
+
+CORRELATION_DIR = Path(__file__).resolve().parents[2] / "services" / "correlation-engine"
+sys.path.insert(0, str(CORRELATION_DIR))
+
+from simulation_control import SimulationCoordinator  # noqa: E402
 
 
 @pytest.mark.asyncio
