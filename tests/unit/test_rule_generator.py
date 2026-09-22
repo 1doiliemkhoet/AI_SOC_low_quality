@@ -136,3 +136,37 @@ tags:
     assert "attack.t1078" in normalized
     assert "attack.T1210" not in normalized
     assert "condition:" not in normalized.split("detection:", 1)[0]
+
+
+def test_normalize_generated_sigma_repairs_scalar_falsepositives_and_invalid_temporal_yaml():
+    from main import RuleGenerationRequest, _normalize_generated_sigma, _validate_sigma_rule
+
+    request = RuleGenerationRequest(
+        alert_id="test-alert-2",
+        alert_description="Login anomaly.",
+        raw_log="Successful login from 192.168.100.140 using user kali",
+        source_ip="192.168.100.140",
+        mitre_techniques=["T1078"],
+        severity="high",
+    )
+    rule = """---
+title: Test Rule
+status: experimental
+logsource:
+  category: authentication
+detection:
+  selection:
+    user: kali
+    hour: !date-now %H
+    event_type: login
+  condition: selection
+falsepositives: Known admin activity
+level: high
+tags:
+  - attack.T1078
+"""
+    normalized = _normalize_generated_sigma(rule, request)
+    valid, error = _validate_sigma_rule(normalized)
+    assert valid, error
+    assert "hour:" not in normalized
+    assert "falsepositives:" in normalized
