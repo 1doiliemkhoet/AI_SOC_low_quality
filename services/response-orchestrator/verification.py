@@ -42,6 +42,10 @@ class VerificationEngine:
         wazuh_username: str = "wazuh-wui",
         wazuh_password: str = "",
         wazuh_verify_ssl: bool = False,
+        wazuh_indexer_url: str = "https://wazuh-indexer:9200",
+        wazuh_indexer_username: str = "admin",
+        wazuh_indexer_password: str = "admin",
+        wazuh_indexer_verify_ssl: bool = False,
         risk_reduction_threshold: float = 0.30,
         monitoring_duration_seconds: int = 1800,
     ):
@@ -51,6 +55,10 @@ class VerificationEngine:
         self.wazuh_username = wazuh_username
         self.wazuh_password = wazuh_password
         self.wazuh_verify_ssl = wazuh_verify_ssl
+        self.wazuh_indexer_url = wazuh_indexer_url.rstrip("/")
+        self.wazuh_indexer_username = wazuh_indexer_username
+        self.wazuh_indexer_password = wazuh_indexer_password
+        self.wazuh_indexer_verify_ssl = wazuh_indexer_verify_ssl
         self.risk_reduction_threshold = risk_reduction_threshold
         self.monitoring_duration_seconds = monitoring_duration_seconds
 
@@ -86,10 +94,11 @@ class VerificationEngine:
 
         continued = monitor_result.get("continued_indicators", False)
         new_alerts = monitor_result.get("new_alerts", 0)
+        monitoring_error = monitor_result.get("monitoring_error")
 
         # Verdict logic
         sim_passed = reduction_pct >= self.risk_reduction_threshold
-        monitor_passed = not continued
+        monitor_passed = not continued and not monitoring_error
 
         if sim_passed and monitor_passed:
             passed = True
@@ -98,6 +107,13 @@ class VerificationEngine:
                 f"{reduction_pct*100:.1f}% (from {pre_rate*100:.1f}% to "
                 f"{post_rate*100:.1f}%). No continued attack indicators "
                 f"detected in {self.monitoring_duration_seconds}s monitoring window."
+            )
+        elif monitoring_error:
+            passed = False
+            reason = (
+                f"Verification FAILED. Wazuh monitoring was unavailable: "
+                f"{monitoring_error}. A monitoring failure is not treated as "
+                f"evidence that the threat was neutralized."
             )
         elif sim_passed and not monitor_passed:
             passed = False
@@ -240,6 +256,7 @@ class VerificationEngine:
                 "continued_indicators": False,
                 "new_alerts": 0,
                 "duration": check_duration,
+                "monitoring_error": str(e),
             }
 
     async def _check_wazuh_alerts(
@@ -248,42 +265,85 @@ class VerificationEngine:
         techniques: List[str],
         since_minutes: int = 5,
     ) -> List[Dict]:
-        """Query Wazuh for recent alerts matching incident indicators."""
-        try:
-            # Authenticate
-            async with httpx.AsyncClient(verify=self.wazuh_verify_ssl) as client:
-                auth_resp = await client.post(
-                    f"{self.wazuh_api_url}/security/user/authenticate",
-                    auth=(self.wazuh_username, self.wazuh_password),
-                    timeout=10.0,
-                )
-                auth_resp.raise_for_status()
-                token = auth_resp.json().get("data", {}).get("token", "")
+        """Query Wazuh Indexer for recent alerts matching incident indicators."""
+        if not source_ips:
+            return []
 
-                # Query alerts
-                headers = {"Authorization": f"Bearer {token}"}
-                resp = await client.get(
-                    f"{self.wazuh_api_url}/alerts",
-                    headers=headers,
-                    params={
-                        "limit": 20,
-                        "sort": "-timestamp",
-                    },
+        now = datetime.utcnow()
+        since = now - timedelta(minutes=max(since_minutes, 1))
+        query = {
+            "size": 20,
+            "sort": [{"timestamp": {"order": "desc"}}],
+            "_source": True,
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "range": {
+                                "timestamp": {
+                                    "gte": since.isoformat() + "Z",
+                                    "lte": now.isoformat() + "Z",
+                                }
+                            }
+                        },
+                        {
+                            "terms": {
+                                "data.srcip": source_ips,
+                            }
+                        },
+                    ]
+                }
+            },
+        }
+
+        try:
+            async with httpx.AsyncClient(
+                verify=self.wazuh_indexer_verify_ssl
+            ) as client:
+                resp = await client.post(
+                    f"{self.wazuh_indexer_url}/wazuh-alerts-*/_search",
+                    auth=(
+                        self.wazuh_indexer_username,
+                        self.wazuh_indexer_password,
+                    ),
+                    json=query,
                     timeout=15.0,
                 )
                 resp.raise_for_status()
 
-                alerts = resp.json().get("data", {}).get("affected_items", [])
+                hits = resp.json().get("hits", {}).get("hits", [])
+                alerts = [
+                    hit.get("_source", {})
+                    for hit in hits
+                    if hit.get("_source")
+                ]
 
-                # Filter for alerts matching our indicators
-                matching = []
-                for alert in alerts:
-                    src = alert.get("data", {}).get("srcip", "")
-                    if src in source_ips:
-                        matching.append(alert)
+                # Active Response audit events are generated by the defense
+                # action itself; they are not evidence that an attack continued.
+                alerts = [
+                    alert
+                    for alert in alerts
+                    if "active_response"
+                    not in (alert.get("rule", {}).get("groups", []) or [])
+                ]
 
-                return matching
+                if techniques:
+                    matching_techniques = set(techniques)
+                    technique_filtered = []
+                    for alert in alerts:
+                        alert_techniques = (
+                            alert.get("rule", {}).get("mitre", {}).get("id", [])
+                        )
+                        if isinstance(alert_techniques, str):
+                            alert_techniques = [alert_techniques]
+                        if matching_techniques.intersection(alert_techniques):
+                            technique_filtered.append(alert)
+                    alerts = technique_filtered
+
+                return alerts
 
         except Exception as e:
-            logger.warning(f"Wazuh alert check failed: {e}")
-            return []
+            logger.warning(f"Wazuh Indexer alert check failed: {e}")
+            raise RuntimeError(
+                f"Wazuh Indexer alert monitoring query failed: {e}"
+            ) from e
