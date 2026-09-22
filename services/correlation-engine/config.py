@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     simulator_ollama_model: str = "llama3.2:3b"
     simulator_default_timesteps: int = 3
     simulator_default_concurrency: int = 1
+    simulator_timeout_seconds: int = 300
     simulator_environment_config: str = ""
 
     # Wazuh Environment Auto-Population
