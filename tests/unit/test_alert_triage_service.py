@@ -57,11 +57,20 @@ class TestTriageResponseModel:
             alert_id="test-001",
             severity="high",
             confidence=0.95,
+            category="intrusion_attempt",
             summary="Brute force attack detected",
+            detailed_analysis="Multiple failed SSH login attempts indicate a brute-force attempt.",
+            potential_impact="Unauthorized account access may occur if the attack succeeds.",
+            is_true_positive=True,
             mitre_tactics=["Credential Access"],
             mitre_techniques=["T1110.001"],
-            iocs=["192.168.1.100"],
-            recommendations=["Block source IP"],
+            iocs=[{"ioc_type": "ip", "value": "192.168.1.100", "confidence": 0.95}],
+            recommendations=[{
+                "action": "Block source IP",
+                "priority": 1,
+                "rationale": "Prevent further authentication attempts from the source.",
+            }],
+            investigation_priority=2,
             model_used="llama3.1:8b",
             processing_time_ms=150
         )
@@ -71,17 +80,22 @@ class TestTriageResponseModel:
 
     def test_severity_levels(self):
         """Test all valid severity levels"""
-        severity_levels = ["critical", "high", "medium", "low", "info"]
+        severity_levels = ["critical", "high", "medium", "low", "informational"]
         for severity in severity_levels:
             response = TriageResponse(
                 alert_id="test-001",
                 severity=severity,
                 confidence=0.8,
+                category="other",
                 summary="Test",
+                detailed_analysis="Test analysis",
+                potential_impact="Test impact",
+                is_true_positive=False,
                 mitre_tactics=[],
                 mitre_techniques=[],
                 iocs=[],
                 recommendations=[],
+                investigation_priority=5,
                 model_used="test",
                 processing_time_ms=100
             )
@@ -199,16 +213,16 @@ class TestConfiguration:
         from config import Settings
 
         settings = Settings()
-        assert settings.service_name == "Alert Triage Service"
+        assert settings.service_name == "alert-triage"
         assert settings.service_version == "1.0.0"
-        assert settings.primary_model == "foundation-sec-8b:latest"
+        assert settings.primary_model == "foundation-sec-8b"
 
     def test_environment_override(self, monkeypatch):
         """Test environment variable overrides"""
         from config import Settings
 
-        monkeypatch.setenv("OLLAMA_HOST", "http://custom-ollama:11434")
-        monkeypatch.setenv("PRIMARY_MODEL", "custom-model:latest")
+        monkeypatch.setenv("TRIAGE_OLLAMA_HOST", "http://custom-ollama:11434")
+        monkeypatch.setenv("TRIAGE_PRIMARY_MODEL", "custom-model:latest")
 
         settings = Settings()
         assert settings.ollama_host == "http://custom-ollama:11434"
@@ -261,20 +275,17 @@ class TestErrorHandling:
 
     def test_negative_rule_level(self):
         """Test handling of negative rule level"""
-        # Current model doesn't validate this, but it should
-        alert = SecurityAlert(
-            alert_id="test-001",
-            timestamp="2025-10-22T10:30:00Z",
-            source_ip="192.168.1.1",
-            destination_ip="10.0.0.1",
-            rule_id="100",
-            rule_level=-1,  # Invalid
-            rule_description="Test",
-            full_log="test log",
-            agent_name="test-agent"
-        )
-        # TODO: Add validation to reject negative rule levels
-        assert alert.rule_level == -1
+        with pytest.raises(Exception):
+            SecurityAlert(
+                alert_id="test-001",
+                timestamp="2025-10-22T10:30:00Z",
+                source_ip="192.168.1.1",
+                dest_ip="10.0.0.1",
+                rule_id="100",
+                rule_level=-1,
+                rule_description="Test",
+                raw_log="test log",
+            )
 
     def test_confidence_out_of_range(self):
         """Test confidence score validation"""
