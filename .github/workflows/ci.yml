@@ -100,7 +100,7 @@ jobs:
       - name: Run unit tests
         run: |
           echo "🧪 Running unit tests..."
-          pytest tests/unit/ -v --tb=short --junit-xml=junit-unit.xml --cov=services --cov-report=xml --cov-report=html || true
+          pytest tests/unit/ -v --tb=short --junit-xml=junit-unit.xml --cov=services --cov-report=xml --cov-report=html
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
@@ -162,7 +162,7 @@ jobs:
       - name: Run integration tests
         run: |
           echo "🔗 Running integration tests..."
-          pytest tests/integration/ -v --tb=short --junit-xml=junit-integration.xml -m "not requires_ollama" || true
+          pytest tests/integration/ -v --tb=short --junit-xml=junit-integration.xml -m "not requires_ollama"
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
@@ -200,7 +200,7 @@ jobs:
       - name: Run security tests
         run: |
           echo "🔒 Running OWASP Top 10 security tests..."
-          pytest tests/security/ -v --tb=short --junit-xml=junit-security.xml -m security || true
+          pytest tests/security/ -v --tb=short --junit-xml=junit-security.xml -m security
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
