@@ -55,6 +55,35 @@ DATABASE_URL = os.getenv(
 )
 ML_INFERENCE_URL = os.getenv("ML_INFERENCE_URL", "http://ml-inference:8000")
 
+SUPPORTED_FEEDBACK_LABELS = frozenset({"BENIGN", "ATTACK"})
+
+
+def filter_valid_feedback_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """Filter and normalize feedback rows before they enter retraining."""
+    if df.empty:
+        return df.copy()
+
+    labels = df["true_label"].astype("string").str.strip().str.upper()
+    is_false_positive = df["is_false_positive"].fillna(False).astype(bool)
+
+    supported = labels.isin(SUPPORTED_FEEDBACK_LABELS)
+    consistent = (
+        ((labels == "BENIGN") & is_false_positive)
+        | ((labels == "ATTACK") & ~is_false_positive)
+    )
+    valid = supported & consistent
+
+    rejected = int((~valid).sum())
+    if rejected:
+        logger.warning(
+            "Rejected %d feedback row(s) from retraining due to unsupported or inconsistent labels",
+            rejected,
+        )
+
+    filtered = df.loc[valid].copy()
+    filtered["true_label"] = labels.loc[valid].astype(str).to_numpy()
+    return filtered
+
 
 def load_feedback_data() -> Optional[pd.DataFrame]:
     """
@@ -90,7 +119,8 @@ def load_feedback_data() -> Optional[pd.DataFrame]:
         """
         df = pd.read_sql(query, conn)
         conn.close()
-        logger.info(f"Loaded {len(df)} labeled feedback entries from database")
+        df = filter_valid_feedback_labels(df)
+        logger.info(f"Loaded {len(df)} valid labeled feedback entries from database")
         return df
     except Exception as e:
         logger.error(f"Failed to load feedback data: {e}")
