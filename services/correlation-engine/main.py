@@ -568,17 +568,10 @@ async def run_simulation(
             status_code=status.HTTP_409_CONFLICT,
             detail="A simulation is already running. Try again after it completes.",
         )
-    config = SimulationConfig(
-        agent_archetypes=archetypes or ["opportunist", "apt", "ransomware", "insider"],
-        timesteps=timesteps,
-        concurrency=settings.simulator_default_concurrency,
-        ollama_host=settings.simulator_ollama_host,
-        ollama_model=settings.simulator_ollama_model,
-    )
-
     env = None
     try:
         # Load environment
+        try:
         if environment_json:
             env = Environment.from_dict(environment_json)
         elif settings.simulator_environment_config:
@@ -595,6 +588,10 @@ async def run_simulation(
                     "Pass environment_json in the request body or set "
                     "CORRELATION_SIMULATOR_ENVIRONMENT_CONFIG."
                 )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Failed to load environment: {exc}")
 
         config = SimulationConfig(
             agent_archetypes=archetypes or ["opportunist", "apt", "ransomware", "insider"],
@@ -925,7 +922,8 @@ async def generate_dataset(
         )
     try:
         # Load base environment
-        if environment_json:
+        try:
+            if environment_json:
             base_env_dict = environment_json
         elif settings.simulator_environment_config:
             import json as _json
@@ -944,6 +942,10 @@ async def generate_dataset(
                            "Pass environment_json in the request body or set "
                            "CORRELATION_SIMULATOR_ENVIRONMENT_CONFIG.",
                 )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Failed to load environment: {exc}")
 
         generator = DatasetGenerator(
             ollama_host=settings.simulator_ollama_host,
@@ -1009,7 +1011,8 @@ async def start_swarm_simulation(
     env = None
     try:
         # Load environment
-        if environment_json:
+        try:
+            if environment_json:
             env = Environment.from_dict(environment_json)
         elif settings.simulator_environment_config:
             env = Environment.load_from_json(settings.simulator_environment_config)
@@ -1022,6 +1025,10 @@ async def start_swarm_simulation(
                     status_code=400,
                     detail="No environment config provided and default not found.",
                 )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Failed to load environment: {exc}")
 
         config = SwarmConfig(
             agent_archetypes=["opportunist", "apt", "ransomware", "insider"],
