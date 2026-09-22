@@ -12,8 +12,20 @@ import sys
 from pathlib import Path
 from unittest.mock import Mock, patch, AsyncMock
 
-# Add services to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "services" / "alert-triage"))
+# Import Alert Triage modules from their service directory without inheriting
+# same-named modules (for example config.py/models.py) from another service.
+ALERT_TRIAGE_DIR = Path(__file__).parent.parent.parent / "services" / "alert-triage"
+sys.path.insert(0, str(ALERT_TRIAGE_DIR))
+
+for _module_name in (
+    "config",
+    "models",
+    "llm_client",
+    "ml_client",
+    "context_manager",
+    "worker_pool",
+):
+    sys.modules.pop(_module_name, None)
 
 from models import SecurityAlert, TriageResponse
 
