@@ -982,10 +982,13 @@ class ResponseOrchestrator:
                             f"verification failed: {verification.verdict_reason[:100]}"
                         )
                 else:
-                    plan.status = PlanStatus.COMPLETED
+                    # A failed verification must remain terminally unsuccessful.
+                    # Without rollback, the system must not report the defense as
+                    # completed because there is no evidence that the response worked.
+                    plan.status = PlanStatus.FAILED
                     plan.completed_at = datetime.utcnow()
-                    logger.warning(
-                        f"Plan {plan.plan_id} completed with verification failure: "
+                    logger.error(
+                        f"Plan {plan.plan_id} FAILED verification without rollback: "
                         f"{verification.verdict_reason[:100]}"
                     )
 
