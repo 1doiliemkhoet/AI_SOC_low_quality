@@ -147,6 +147,57 @@ class TestOllamaClient:
         assert is_healthy is False
 
     @patch('httpx.AsyncClient')
+    async def test_analyze_alert_uses_fallback_when_primary_fails(self, mock_client, sample_security_alert):
+        """Test that a failed primary model triggers the configured fallback model."""
+        from llm_client import OllamaClient
+
+        primary_response = Mock()
+        primary_response.status_code = 500
+        primary_response.text = "primary model unavailable"
+
+        fallback_response = Mock()
+        fallback_response.status_code = 200
+        fallback_response.json.return_value = {
+            "response": json.dumps({
+                "severity": "high",
+                "category": "intrusion_attempt",
+                "confidence": 0.90,
+                "summary": "Fallback analysis succeeded",
+                "detailed_analysis": "Fallback model produced a valid triage response.",
+                "potential_impact": "Potential unauthorized access.",
+                "is_true_positive": True,
+                "iocs": [],
+                "mitre_techniques": ["T1110.001"],
+                "mitre_tactics": ["credential-access"],
+                "recommendations": [],
+                "investigation_priority": 2,
+                "estimated_analyst_time": 10,
+            })
+        }
+
+        mock_http_client = mock_client.return_value.__aenter__.return_value
+        mock_http_client.post = AsyncMock(
+            side_effect=[primary_response, fallback_response]
+        )
+
+        client = OllamaClient()
+        client.primary_model = "primary:test"
+        client.fallback_model = "fallback:test"
+        client.ml_client.predict_with_fallback = AsyncMock(return_value=None)
+
+        alert = SecurityAlert(**sample_security_alert)
+        result = await client.analyze_alert(alert)
+
+        assert result is not None
+        assert result.model_used == "fallback:test"
+
+        calls = mock_http_client.post.await_args_list
+        assert len(calls) == 2
+        assert calls[0].kwargs["json"]["model"] == "primary:test"
+        assert calls[1].kwargs["json"]["model"] == "fallback:test"
+
+
+    @patch('httpx.AsyncClient')
     async def test_analyze_alert_success(self, mock_client, sample_security_alert, mock_ollama_response):
         """Test successful alert analysis"""
         from llm_client import OllamaClient
