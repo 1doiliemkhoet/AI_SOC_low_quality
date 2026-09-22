@@ -42,6 +42,10 @@ class VerificationEngine:
         wazuh_username: str = "wazuh-wui",
         wazuh_password: str = "",
         wazuh_verify_ssl: bool = False,
+        wazuh_indexer_url: str = "https://wazuh-indexer:9200",
+        wazuh_indexer_username: str = "admin",
+        wazuh_indexer_password: str = "admin",
+        wazuh_indexer_verify_ssl: bool = False,
         risk_reduction_threshold: float = 0.30,
         monitoring_duration_seconds: int = 1800,
     ):
@@ -51,6 +55,10 @@ class VerificationEngine:
         self.wazuh_username = wazuh_username
         self.wazuh_password = wazuh_password
         self.wazuh_verify_ssl = wazuh_verify_ssl
+        self.wazuh_indexer_url = wazuh_indexer_url.rstrip("/")
+        self.wazuh_indexer_username = wazuh_indexer_username
+        self.wazuh_indexer_password = wazuh_indexer_password
+        self.wazuh_indexer_verify_ssl = wazuh_indexer_verify_ssl
         self.risk_reduction_threshold = risk_reduction_threshold
         self.monitoring_duration_seconds = monitoring_duration_seconds
 
