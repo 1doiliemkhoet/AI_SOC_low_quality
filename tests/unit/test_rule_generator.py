@@ -227,4 +227,5 @@ tags:
     assert "    user: kali" in normalized
     assert "    event_type: login" in normalized
     assert "dayofweek:" not in normalized
+    assert "day_of_week:" not in normalized
     assert "- user:" not in normalized
