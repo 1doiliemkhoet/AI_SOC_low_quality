@@ -343,6 +343,122 @@ class TestAdapters:
         assert "timestamp" in d
 
 
+    @pytest.mark.asyncio
+    async def test_wazuh_block_ip_api_error_fails_closed(self):
+        import httpx
+        from adapters.wazuh import WazuhAdapter
+
+        adapter = WazuhAdapter(api_url="https://fake-wazuh:55000")
+        response = httpx.Response(
+            502,
+            request=httpx.Request("PUT", "https://fake-wazuh:55000/active-response"),
+        )
+        api_error = httpx.HTTPStatusError(
+            "upstream failure",
+            request=response.request,
+            response=response,
+        )
+
+        with patch.object(
+            adapter, "_resolve_target_agents",
+            new_callable=AsyncMock,
+            return_value=["001"],
+        ), patch.object(
+            adapter, "_api_call",
+            new_callable=AsyncMock,
+            side_effect=api_error,
+        ):
+            result = await adapter.execute("block_ip", "203.0.113.42")
+
+        assert not result.success
+        assert "Wazuh API error: 502" in result.detail
+        assert result.target == "203.0.113.42"
+
+    @pytest.mark.asyncio
+    async def test_wazuh_block_ip_rejected_by_active_response_fails(self):
+        from adapters.wazuh import WazuhAdapter
+
+        adapter = WazuhAdapter(api_url="https://fake-wazuh:55000")
+        wazuh_rejection = {
+            "error": 0,
+            "data": {
+                "affected_items": [],
+                "failed_items": [{"error": 8}],
+                "total_failed_items": 1,
+            },
+        }
+
+        with patch.object(
+            adapter, "_resolve_target_agents",
+            new_callable=AsyncMock,
+            return_value=["001"],
+        ), patch.object(
+            adapter, "_api_call",
+            new_callable=AsyncMock,
+            return_value=wazuh_rejection,
+        ):
+            result = await adapter.execute("block_ip", "203.0.113.42")
+
+        assert not result.success
+        assert "rejected or did not execute" in result.detail
+        assert result.rollback_capable is False
+
+    @pytest.mark.asyncio
+    async def test_wazuh_block_ip_with_no_active_agents_fails(self):
+        from adapters.wazuh import WazuhAdapter
+
+        adapter = WazuhAdapter(api_url="https://fake-wazuh:55000")
+
+        with patch.object(
+            adapter, "_resolve_target_agents",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            result = await adapter.execute("block_ip", "203.0.113.42")
+
+        assert not result.success
+        assert "No active Wazuh endpoint agents" in result.detail
+        assert result.rollback_capable is False
+
+    @pytest.mark.asyncio
+    async def test_wazuh_verify_api_error_returns_failure(self):
+        import httpx
+        from adapters.wazuh import WazuhAdapter
+
+        adapter = WazuhAdapter(api_url="https://fake-wazuh:55000")
+        response = httpx.Response(
+            503,
+            request=httpx.Request("GET", "https://fake-wazuh:55000/active-response"),
+        )
+        api_error = httpx.HTTPStatusError(
+            "service unavailable",
+            request=response.request,
+            response=response,
+        )
+
+        with patch.object(
+            adapter, "_api_call",
+            new_callable=AsyncMock,
+            side_effect=api_error,
+        ):
+            result = await adapter.verify("block_ip", "203.0.113.42")
+
+        assert not result.success
+        assert "Cannot verify block" in result.detail
+        assert result.error
+
+    @pytest.mark.asyncio
+    async def test_wazuh_block_ip_rollback_fails_closed(self):
+        from adapters.wazuh import WazuhAdapter
+
+        adapter = WazuhAdapter(api_url="https://fake-wazuh:55000")
+        result = await adapter.rollback("block_ip", "203.0.113.42")
+
+        assert not result.success
+        assert result.rollback_capable is False
+        assert "cannot force-delete firewall-drop state" in result.detail.lower()
+
+
 # ============================================================================
 # Planner Tests (with mocked LLM)
 # ============================================================================
