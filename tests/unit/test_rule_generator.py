@@ -79,3 +79,24 @@ tags:
     valid, error = _validate_sigma_rule(rule)
     assert not valid
     assert "undefined detection selection" in error.lower()
+
+
+def test_ensure_sigma_condition_adds_condition_for_single_selection():
+    from main import _ensure_sigma_condition
+
+    rule = """---
+title: Single Selection
+status: experimental
+logsource:
+  category: authentication
+detection:
+  selection:
+    user: kali
+level: high
+tags:
+  - attack.t1078
+"""
+    normalized = _ensure_sigma_condition(rule)
+    valid, error = _validate_sigma_rule(normalized)
+    assert valid, error
+    assert "condition: selection" in normalized
